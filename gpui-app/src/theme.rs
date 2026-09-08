@@ -23,6 +23,15 @@ fn alpha_byte(opacity: f32) -> u32 {
     (opacity.clamp(0.0, 1.0) * 255.0).round() as u32
 }
 
+/// Tertiary background dispatch (port of `getTertiaryBackgroundStyle`).
+pub fn tertiary_bg(is_dark: bool, tertiary_opacity: f32) -> Rgba {
+    if is_dark {
+        dark::tertiary(tertiary_opacity)
+    } else {
+        light::tertiary(tertiary_opacity)
+    }
+}
+
 pub mod dark {
     use super::*;
     pub fn bg_primary() -> Rgba {

@@ -1,12 +1,15 @@
 //! Windows 11 Clipboard History — GPUI frontend entry point.
 //!
 //! Milestone v0.8.0: pixel-identical port of the Tauri/React frontend.
-//! Phase 1: foundation — open the transparent frameless popup shell.
-//! Backend wiring (clipboard, shortcut, tray, settings) lands in Phase 2+.
+//! Phase 2: live clipboard popup (history + search + paste + positioning).
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{
-    App, Application, Bounds, Context, SharedString, Window, WindowBackgroundAppearance,
-    WindowBounds, WindowKind, WindowOptions, div, prelude::*, px, rgb, size,
+    App, Application, AssetSource, Bounds, Context, SharedString, Size, WindowBounds, WindowKind,
+    WindowOptions, point, prelude::*, px,
 };
 
 mod backend;
@@ -14,44 +17,103 @@ mod geometry;
 mod history;
 mod settings;
 mod theme;
+mod ui;
+
+use backend::BackendService;
+use geometry::{MonitorRect, bottom_center, clamp_to_monitor, cursor_position};
+use ui::popup::Popup;
+use win11_clipboard_history_lib::{focus_manager, session};
 
 /// Separate app-id from the Tauri build so both can coexist (SYS-06).
 const APP_ID: &str = "dev.gustavosett.clipboard-history-gpui";
 
 /// Main popup dimensions mirror `tauri.conf.json` (`main` window).
-const POPUP_WIDTH: f32 = 360.0;
-const POPUP_HEIGHT: f32 = 480.0;
+const POPUP_W: f32 = 360.0;
+const POPUP_H: f32 = 480.0;
 
-struct PopupShell {
-    title: SharedString,
+struct GpuiAssets {
+    base: PathBuf,
 }
 
-impl Render for PopupShell {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .justify_center()
-            .items_center()
-            .gap_2()
-            // Temporary solid fill; acrylic/opacity tokens arrive in Phase 2 (WIND-02).
-            .bg(rgb(0x202020))
-            .text_color(rgb(0xffffff))
-            .child(self.title.clone())
-            .child(format!("v{} — GPUI port (Phase 1)", env!("CARGO_PKG_VERSION")))
+impl AssetSource for GpuiAssets {
+    fn load(&self, path: &str) -> anyhow::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        match std::fs::read(self.base.join(path)) {
+            Ok(data) => Ok(Some(std::borrow::Cow::Owned(data))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
+        Ok(std::fs::read_dir(self.base.join(path))?
+            .filter_map(|entry| {
+                Some(SharedString::from(
+                    entry.ok()?.path().to_string_lossy().into_owned(),
+                ))
+            })
+            .collect())
     }
 }
 
-fn popup_options(bounds: Bounds<gpui::Pixels>) -> WindowOptions {
+fn assets_dir() -> PathBuf {
+    let bundled = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+    if bundled.is_dir() {
+        return bundled;
+    }
+    // Installed layout (Phase 5 packaging).
+    PathBuf::from("/usr/share/win11-clipboard-history-gpui/assets")
+}
+
+/// Initial window origin: cursor-follow on X11, bottom-center on Wayland —
+/// matching the Tauri `WindowController` behavior exactly.
+fn initial_origin(cx: &App) -> (f32, f32) {
+    let displays = cx.displays();
+    let rect_of = |b: gpui::Bounds<gpui::Pixels>| MonitorRect {
+        x: f32::from(b.origin.x) as i32,
+        y: f32::from(b.origin.y) as i32,
+        w: f32::from(b.size.width) as i32,
+        h: f32::from(b.size.height) as i32,
+    };
+    let first = displays.first().map(|d| rect_of(d.bounds()));
+    let Some(mon) = first else {
+        return (0.0, 0.0);
+    };
+    if session::is_wayland() {
+        let (x, y) = bottom_center(&mon, geometry::POPUP_W, geometry::POPUP_H);
+        return (x as f32, y as f32);
+    }
+    match cursor_position() {
+        Some((cx_, cy)) => {
+            // Prefer the monitor containing the cursor (multi-monitor parity).
+            let mon = cx
+                .displays()
+                .iter()
+                .map(|d| rect_of(d.bounds()))
+                .find(|m| m.contains(cx_, cy))
+                .unwrap_or(mon);
+            let (x, y) = clamp_to_monitor(&mon, geometry::POPUP_W, geometry::POPUP_H, cx_, cy);
+            (x as f32, y as f32)
+        }
+        None => {
+            let (x, y) = bottom_center(&mon, geometry::POPUP_W, geometry::POPUP_H);
+            (x as f32, y as f32)
+        }
+    }
+}
+
+fn popup_options(origin: (f32, f32)) -> WindowOptions {
+    let bounds = Bounds::new(
+        point(px(origin.0), px(origin.1)),
+        Size {
+            width: px(POPUP_W),
+            height: px(POPUP_H),
+        },
+    );
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
-        // Frameless: no titlebar, matching `decorations: false`.
         titlebar: None,
-        // Transparent: compositor blur + opacity applied in Phase 2.
-        window_background: WindowBackgroundAppearance::Transparent,
+        window_background: gpui::WindowBackgroundAppearance::Transparent,
         show: true,
-        // Popup semantics: floating utility window (always-on-top behavior in Phase 2).
         kind: WindowKind::PopUp,
         is_movable: false,
         focus: true,
@@ -61,14 +123,53 @@ fn popup_options(bounds: Bounds<gpui::Pixels>) -> WindowOptions {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
-        let bounds = Bounds::centered(None, size(px(POPUP_WIDTH), px(POPUP_HEIGHT)), cx);
-        cx.open_window(popup_options(bounds), |_, cx| {
-            cx.new(|_| PopupShell {
-                title: "Clipboard History".into(),
+    let settings = settings::load();
+    let backend = BackendService::new(&settings);
+    eprintln!(
+        "[gpui-app] loaded {} history items from {}",
+        backend.snapshot().len(),
+        backend::history_path().display()
+    );
+    // Remember the currently focused window (X11) so paste can restore it —
+    // mirrors the Tauri show path (`save_focused_window` on toggle).
+    focus_manager::save_focused_window();
+
+    Application::new()
+        .with_assets(GpuiAssets { base: assets_dir() })
+        .run(move |cx: &mut App| {
+            let origin = initial_origin(cx);
+            let backend = Arc::clone(&backend);
+            let settings = settings.clone();
+            let handle = cx
+                .open_window(popup_options(origin), |_window, cx: &mut App| {
+                    let focus = cx.focus_handle();
+                    let search_focus = cx.focus_handle();
+                    cx.new(|cx| Popup::new(backend, settings, focus, search_focus, cx))
+                })
+                .expect("failed to open GPUI popup window");
+
+            // Initial keyboard focus on the popup root (parity: focus-first-item).
+            let _ = handle.update(cx, |popup, window, cx| {
+                popup.focus.focus(window);
+                cx.notify();
+            });
+
+            // Watcher poll: refresh the snapshot when the backend version bumps.
+            cx.spawn(async move |cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(300))
+                        .await;
+                    let alive = handle.update(cx, |popup, _window, cx| {
+                        popup.poll_backend(cx);
+                    });
+                    if alive.is_err() {
+                        break;
+                    }
+                }
             })
-        })
-        .expect("failed to open GPUI popup window");
-        cx.activate(true);
-    });
+            .detach();
+
+            cx.activate(true);
+        });
 }
