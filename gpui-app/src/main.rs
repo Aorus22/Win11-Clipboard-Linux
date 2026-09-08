@@ -267,8 +267,10 @@ impl Render for HolderView {
     }
 }
 
-/// Permanent 1×1 invisible window: keeps the platform run loop alive when the
-/// popup is closed (tray-only resident). Opened once, never closed.
+/// Permanent 1×1 window, created UNMAPPED so it never appears in taskbars,
+/// docks, or pagers — yet keeps the platform run loop alive when the popup is
+/// closed (tray-only resident). Opened once, never closed.
+/// (If the run loop turns out to key off mapped surfaces, this reverts to mapped.)
 fn open_holder_window(cx: &mut App) {
     let bounds = Bounds::new(point(px(0.), px(0.)), gpui::size(px(1.), px(1.)));
     let _ = cx.open_window(
@@ -276,7 +278,7 @@ fn open_holder_window(cx: &mut App) {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: None,
             window_background: gpui::WindowBackgroundAppearance::Transparent,
-            show: true,
+            show: false,
             focus: false,
             kind: WindowKind::PopUp,
             is_movable: false,
