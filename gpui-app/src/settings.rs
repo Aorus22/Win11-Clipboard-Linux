@@ -125,6 +125,14 @@ pub fn config_dir() -> PathBuf {
         .join(CONFIG_DIR_NAME)
 }
 
+/// Modification time of the settings file (cross-process live-apply: a popup
+/// started earlier reloads when another process saves).
+pub fn settings_mtime() -> Option<std::time::SystemTime> {
+    std::fs::metadata(config_dir().join(SETTINGS_FILE))
+        .and_then(|m| m.modified())
+        .ok()
+}
+
 /// GNOME `color-scheme` probe for `theme_mode == "system"`.
 /// The full XDG portal listener lands in Phase 5 (SYS-04); this covers day-one parity.
 pub fn system_prefers_dark() -> bool {

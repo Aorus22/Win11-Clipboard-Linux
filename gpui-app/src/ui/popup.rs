@@ -84,6 +84,7 @@ pub struct Popup {
     pub symbol_recents: Vec<SymbolItem>,
     last_version: u64,
     last_settings_version: u64,
+    last_settings_mtime: Option<std::time::SystemTime>,
 }
 
 impl PickerTabState {
@@ -137,6 +138,7 @@ impl Popup {
             symbol_recents,
             last_version: version,
             last_settings_version: 1,
+            last_settings_mtime: crate::settings::settings_mtime(),
         }
     }
 
@@ -192,6 +194,21 @@ impl Popup {
             let settings = self.shared.lock().settings.clone();
             self.is_dark = resolve_dark(&settings);
             self.settings = settings;
+            self.last_settings_mtime = crate::settings::settings_mtime();
+            changed = true;
+        } else if crate::settings::settings_mtime() != self.last_settings_mtime {
+            // Another process saved (e.g. a separately launched settings window):
+            // reload from disk and publish into shared state.
+            let settings = crate::settings::load();
+            self.backend
+                .set_max_history_size(settings.max_history_size);
+            self.is_dark = resolve_dark(&settings);
+            self.settings = settings.clone();
+            let mut guard = self.shared.lock();
+            guard.settings = settings;
+            guard.version += 1;
+            self.last_settings_version = guard.version;
+            self.last_settings_mtime = crate::settings::settings_mtime();
             changed = true;
         }
         if !changed {
