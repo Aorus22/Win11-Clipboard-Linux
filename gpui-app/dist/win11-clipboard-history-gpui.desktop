@@ -6,6 +6,7 @@ GenericName=Clipboard Manager
 Comment=Windows 11-style clipboard history manager for Linux (GPUI native build)
 Exec=__BINDIR__/win11-clipboard-history-gpui
 Icon=win11-clipboard-history-gpui
+StartupWMClass=dev.gustavosett.clipboard-history-gpui
 Terminal=false
 Categories=Utility;
 StartupNotify=false
