@@ -3,9 +3,9 @@ milestone: v0.8.0
 milestone_name: GPUI Frontend Port
 status: planning
 progress:
-  phases_total: 0
+  phases_total: 5
   phases_complete: 0
-  requirements_total: 0
+  requirements_total: 30
   requirements_complete: 0
 ---
 
@@ -16,7 +16,7 @@ progress:
 Phase: Not started (defining requirements)
 Plan: —
 Status: Defining requirements
-Last activity: 2026-09-08 — Milestone v0.8.0 started
+Last activity: 2026-09-08 — Requirements (30) + roadmap draft (5 phases) proposed, awaiting approval
 
 ## Project Reference
 
@@ -43,6 +43,7 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 
 ### Todos
 
-- [ ] Riset ekosistem GPUI (inline, ringan)
-- [ ] REQUIREMENTS.md dengan REQ-IDs
-- [ ] ROADMAP.md + approval user
+- [x] Riset ekosistem GPUI (inline, ringan)
+- [x] REQUIREMENTS.md dengan REQ-IDs (30) — menunggu konfirmasi
+- [x] ROADMAP.md draft (5 phases) — menunggu approval
+- [ ] Commit REQUIREMENTS.md + ROADMAP.md + STATE.md setelah approval
