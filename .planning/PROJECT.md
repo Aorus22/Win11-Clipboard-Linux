@@ -71,10 +71,14 @@ Super+V yang cepat dan cantik di Linux — popup riwayat clipboard ala Windows 1
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Port ke GPUI Rust, React dibiarkan hidup (koeksistensi) | Stabilitas rilis + eksperimen paralel tanpa risiko | — Pending |
+| Port ke GPUI Rust, React dibiarkan hidup (koeksistensi) | Stabilitas rilis + eksperimen paralel tanpa risiko | ✓ Locked Phase 1 |
 | Paritas penuh (clipboard + semua picker + settings + wizard) | Tanggung kalau setengah; definisi "sama persis" | — Pending |
-| Backend Rust dipakai ulang, bukan rewrite | Paste/shortcut/izin uinput rawan regresi | — Pending |
-| Research + roadmap inline (tanpa subagents) | Billing subagent habis saat milestone dimulai | — Pending |
+| Backend Rust dipakai ulang, bukan rewrite | Paste/shortcut/izin uinput rawan regresi | ✓ Locked Phase 1 |
+| Research + roadmap inline (tanpa subagents) | Billing subagent habis saat milestone dimulai | ✓ Done |
+| UI framework: upstream `gpui =0.2.2` (tolak fork adabraka-gpui) | 249k downloads vs ~1k; extras fork diduplikasi backend sendiri; contoh window_positioning membuktikan API PopUp transparan | ✓ Locked Phase 1 |
+| Tray: crate `tray-icon` (SNI); hotkey X11: `global-hotkey`, Wayland: reuse `linux_shortcut_manager` | Upstream GPUI tak punya tray/hotkey; pola app saat ini sudah terbukti di kedua display server | ✓ Locked Phase 1 |
+| Koeksistensi: biner `win11-clipboard-history-gpui`, app-id `...clipboard-history-gpui`, config `~/.config/win11-clipboard-history-gpui/` | Berbagi config/shortcut = konflik; satu pemegang Super+V + single-instance lock sendiri | ✓ Locked Phase 1 |
+| Pin `gpui =0.2.2` + commit Cargo.lock; isolasi API GPUI di `gpui-app/src/ui/` | Pre-1.0 churn; bump tak melebar | ✓ Locked Phase 1 |
 
 ## Evolution
 
