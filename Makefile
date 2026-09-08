@@ -374,6 +374,7 @@ GPUI_DESKTOP := $(GPUI_BIN).desktop
 # Release build of the GPUI frontend (pinned deps via gpui-app/Cargo.lock)
 gpui-build:
 	@echo -e "$(CYAN)Building GPUI frontend (release)...$(RESET)"
+	@command -v cargo >/dev/null || (echo "cargo not found - install Rust: https://rustup.rs"; exit 1)
 	cargo build --release --manifest-path gpui-app/Cargo.toml
 	@echo -e "$(GREEN)✓ Built gpui-app/target/release/$(GPUI_BIN)$(RESET)"
 
