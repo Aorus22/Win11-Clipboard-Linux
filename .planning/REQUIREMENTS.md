@@ -98,16 +98,16 @@ Which phases cover which requirements. Updated during roadmap creation.
 | WIND-02 | Phase 2 | In Progress |
 | WIND-03 | Phase 2 | In Progress |
 | WIND-04 | Phase 2 | In Progress |
-| WIND-05 | Phase 1 | Pending |
+| WIND-05 | Phase 1 | Complete |
 | SYS-01 | Phase 5 | Pending |
 | SYS-02 | Phase 5 | Pending |
-| SYS-03 | Phase 5 | Pending |
+| SYS-03 | Phase 5 | Complete |
 | SYS-04 | Phase 5 | Pending |
-| SYS-05 | Phase 5 | Pending |
-| SYS-06 | Phase 1 | Pending |
+| SYS-05 | Phase 5 | Complete |
+| SYS-06 | Phase 1 | Complete |
 | PKG-01 | Phase 5 | Pending |
-| PKG-02 | Phase 5 | Pending |
-| PKG-03 | Phase 1 | Pending |
+| PKG-02 | Phase 5 | Complete |
+| PKG-03 | Phase 1 | Complete |
 
 **Coverage:**
 - v0.8.0 requirements: 30 total

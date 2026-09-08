@@ -4,6 +4,8 @@ target/
 
 # Build outputs
 dist/
+# ...except the GPUI packaging templates (desktop entry source)
+!gpui-app/dist/
 src-tauri/target/
 
 # IDE

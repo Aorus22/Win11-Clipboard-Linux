@@ -36,7 +36,7 @@ RESET := \033[0m
 
 .PHONY: all help deps deps-ubuntu deps-debian deps-fedora deps-arch \
         rust node check-deps dev build install uninstall clean clean-first-run run \
-        lint format test release
+        lint format test release gpui-build gpui-install gpui-uninstall
 
 all: build
 
@@ -363,3 +363,43 @@ clean: clean-first-run
 	rm -rf dist
 	rm -rf src-tauri/target
 	@echo -e "$(GREEN)✓ Cleaned$(RESET)"
+
+# ============================================================================
+# GPUI frontend (v0.8.0 milestone) — parallel native build, coexists with Tauri
+# ============================================================================
+
+GPUI_BIN := win11-clipboard-history-gpui
+GPUI_DESKTOP := $(GPUI_BIN).desktop
+
+# Release build of the GPUI frontend (pinned deps via gpui-app/Cargo.lock)
+gpui-build:
+	@echo -e "$(CYAN)Building GPUI frontend (release)...$(RESET)"
+	cargo build --release --manifest-path gpui-app/Cargo.toml
+	@echo -e "$(GREEN)✓ Built gpui-app/target/release/$(GPUI_BIN)$(RESET)"
+
+# Install GPUI build alongside the Tauri app (PREFIX-aware, DESTDIR-safe).
+# Shares the uinput udev rule (identical content, idempotent). Never touches
+# the Tauri wrapper, desktop entry, icons, or autostart entries.
+gpui-install: gpui-build
+	@echo -e "$(CYAN)Installing $(GPUI_BIN) to $(DESTDIR)$(PREFIX)...$(RESET)"
+	install -Dm755 gpui-app/target/release/$(GPUI_BIN) $(DESTDIR)$(BINDIR)/$(GPUI_BIN)
+	@sed 's|__BINDIR__|$(BINDIR)|' gpui-app/dist/$(GPUI_DESKTOP) > /tmp/$(GPUI_DESKTOP)
+	install -Dm644 /tmp/$(GPUI_DESKTOP) $(DESTDIR)$(DATADIR)/applications/$(GPUI_DESKTOP)
+	install -Dm644 src-tauri/icons/128x128.png $(DESTDIR)$(DATADIR)/icons/hicolor/128x128/apps/$(GPUI_BIN).png
+	install -Dm644 src-tauri/icons/icon.png $(DESTDIR)$(DATADIR)/icons/hicolor/256x256/apps/$(GPUI_BIN).png
+	@mkdir -p $(DESTDIR)/etc/udev/rules.d
+	install -Dm644 src-tauri/bundle/linux/99-win11-clipboard-input.rules $(DESTDIR)/etc/udev/rules.d/
+	@update-desktop-database $(DESTDIR)$(DATADIR)/applications 2>/dev/null || true
+	@gtk-update-icon-cache -f -t $(DESTDIR)$(DATADIR)/icons/hicolor 2>/dev/null || true
+	@echo -e "$(GREEN)✓ Installed! The GPUI build coexists with the Tauri app.$(RESET)"
+	@echo "Run '$(GPUI_BIN)' once to complete the first-run wizard."
+
+# Remove only GPUI-owned files. The udev rule stays (shared with Tauri build).
+gpui-uninstall:
+	@echo -e "$(CYAN)Uninstalling $(GPUI_BIN)...$(RESET)"
+	@pkill -x "$(GPUI_BIN)" 2>/dev/null || true
+	rm -f $(DESTDIR)$(BINDIR)/$(GPUI_BIN)
+	rm -f $(DESTDIR)$(DATADIR)/icons/hicolor/128x128/apps/$(GPUI_BIN).png
+	rm -f $(DESTDIR)$(DATADIR)/icons/hicolor/256x256/apps/$(GPUI_BIN).png
+	rm -f $(DESTDIR)$(DATADIR)/applications/$(GPUI_DESKTOP)
+	@echo -e "$(GREEN)✓ Uninstalled (user data in ~/.config/$(GPUI_BIN) kept)$(RESET)"
