@@ -4,7 +4,7 @@ milestone_name: GPUI Frontend Port
 status: planning
 progress:
   phases_total: 5
-  phases_complete: 0
+  phases_complete: 1
   requirements_total: 30
   requirements_complete: 0
 ---
@@ -13,10 +13,10 @@ progress:
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-09-08 — Requirements (30) + roadmap draft (5 phases) proposed, awaiting approval
+Phase: 1 complete (foundation & coexistence) → next: Phase 2 clipboard popup parity
+Plan: `.planning/phases/01-foundation/01-PLAN.md` executed (T1–T4 all pass)
+Status: Phase 2 context gathering
+Last activity: 2026-09-08 — Phase 1 complete (gpui-app boots on GNOME Wayland, 12s smoke pass)
 
 ## Project Reference
 

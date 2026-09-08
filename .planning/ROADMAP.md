@@ -1,16 +1,16 @@
-# Roadmap: v0.8.0 GPUI Frontend Port (DRAFT — menunggu approval)
+# Roadmap: v0.8.0 GPUI Frontend Port
 
 **Milestone:** v0.8.0 GPUI Frontend Port
-**Status:** DRAFT proposal, inline (roadmapper subagent unavailable)
+**Status:** Approved [auto-approved — full autonomy granted] | inline (roadmapper subagent unavailable)
 **Phases:** 5 | **Requirements mapped:** 30/30 ✓
 
-| # | Phase | Goal | Requirements | Success Criteria |
-|---|-------|------|--------------|------------------|
-| 1 | Foundation & coexistence | GPUI app boots sebagai biner terpisah reuse backend; keputusan stack + koeksistensi dikunci | SYS-06, PKG-03, WIND-05 | 4 |
-| 2 | Clipboard popup parity | Popup utama identik 1:1, history end-to-end | CORE-01–06, WIND-01–04 | 4 |
-| 3 | Pickers parity | Semua tab picker + data identik | PICK-01–05 | 3 |
-| 4 | Settings & setup wizard | Settings + wizard paritas perilaku | SET-01–05 | 2 |
-| 5 | System integration & packaging | Terinstal, terintegrasi, terverifikasi berdampingan | SYS-01–05, PKG-01–02 | 3 |
+| # | Phase | Goal | Requirements | Success Criteria | Status |
+|---|-------|------|--------------|------------------|--------|
+| 1 | Foundation & coexistence | GPUI app boots sebagai biner terpisah reuse backend; keputusan stack + koeksistensi dikunci | SYS-06, PKG-03, WIND-05 | 4 | ✓ complete |
+| 2 | Clipboard popup parity | Popup utama identik 1:1, history end-to-end | CORE-01–06, WIND-01–04 | 4 | ○ pending |
+| 3 | Pickers parity | Semua tab picker + data identik | PICK-01–05 | 3 | ○ pending |
+| 4 | Settings & setup wizard | Settings + wizard paritas perilaku | SET-01–05 | 2 | ○ pending |
+| 5 | System integration & packaging | Terinstal, terintegrasi, terverifikasi berdampingan | SYS-01–05, PKG-01–02 | 3 | ○ pending |
 
 ## Phase Details
 
