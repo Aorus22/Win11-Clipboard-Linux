@@ -1036,14 +1036,22 @@ fn render_drag_strip(is_dark: bool, cx: &mut Context<Popup>) -> impl IntoElement
         .cursor_grab()
         .child(
             div()
+                .id("drag-pill")
                 .w(px(40.))
                 .h(px(4.))
                 .rounded_full()
+                .cursor_grab()
                 .bg(if is_dark {
                     gpui::rgba(0xffffff33)
                 } else {
                     gpui::rgba(0x00000033)
-                }),
+                })
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|_, _, window, _| {
+                        window.start_window_move();
+                    }),
+                ),
         )
         .child(
             div()

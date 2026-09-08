@@ -139,7 +139,7 @@ fn popup_options(origin: (f32, f32), w: f32, h: f32) -> WindowOptions {
         window_background: gpui::WindowBackgroundAppearance::Transparent,
         show: true,
         kind: WindowKind::PopUp,
-        is_movable: false,
+        is_movable: true,
         focus: true,
         app_id: Some(APP_ID.into()),
         ..Default::default()
