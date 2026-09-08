@@ -78,12 +78,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CORE-01 | Phase 2 | Pending |
-| CORE-02 | Phase 2 | Pending |
-| CORE-03 | Phase 2 | Pending |
-| CORE-04 | Phase 2 | Pending |
-| CORE-05 | Phase 2 | Pending |
-| CORE-06 | Phase 2 | Pending |
+| CORE-01 | Phase 2 | In Progress |
+| CORE-02 | Phase 2 | In Progress |
+| CORE-03 | Phase 2 | In Progress |
+| CORE-04 | Phase 2 | In Progress |
+| CORE-05 | Phase 2 | In Progress |
+| CORE-06 | Phase 2 | In Progress |
 | PICK-01 | Phase 3 | Pending |
 | PICK-02 | Phase 3 | Pending |
 | PICK-03 | Phase 3 | Pending |
@@ -94,10 +94,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SET-03 | Phase 4 | Pending |
 | SET-04 | Phase 4 | Pending |
 | SET-05 | Phase 4 | Pending |
-| WIND-01 | Phase 2 | Pending |
-| WIND-02 | Phase 2 | Pending |
-| WIND-03 | Phase 2 | Pending |
-| WIND-04 | Phase 2 | Pending |
+| WIND-01 | Phase 2 | In Progress |
+| WIND-02 | Phase 2 | In Progress |
+| WIND-03 | Phase 2 | In Progress |
+| WIND-04 | Phase 2 | In Progress |
 | WIND-05 | Phase 1 | Pending |
 | SYS-01 | Phase 5 | Pending |
 | SYS-02 | Phase 5 | Pending |
