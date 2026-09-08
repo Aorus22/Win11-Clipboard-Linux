@@ -12,6 +12,7 @@ use gpui::{
     WindowOptions, point, prelude::*, px,
 };
 
+mod app_state;
 mod backend;
 mod geometry;
 mod history;
@@ -126,6 +127,7 @@ fn popup_options(origin: (f32, f32)) -> WindowOptions {
 fn main() {
     let settings = settings::load();
     let backend = BackendService::new(&settings);
+    let shared = app_state::shared(settings.clone());
     eprintln!(
         "[gpui-app] loaded {} history items from {}",
         backend.snapshot().len(),
@@ -140,6 +142,7 @@ fn main() {
         .run(move |cx: &mut App| {
             let origin = initial_origin(cx);
             let backend = Arc::clone(&backend);
+            let shared = Arc::clone(&shared);
             let settings = settings.clone();
             // Verification aid (Phase 3+): open a specific tab to exercise its
             // render path headlessly, e.g. GPUI_SMOKE_TAB=emoji.
@@ -159,6 +162,7 @@ fn main() {
                     cx.new(|cx| {
                         Popup::new(
                             backend,
+                            shared,
                             settings,
                             focus,
                             search_focus,

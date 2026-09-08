@@ -15,6 +15,7 @@ use super::history_item::{CardParams, render_history_item};
 use super::icons::{self, icon};
 use super::search::SearchState;
 use super::tabbar::render_tabbar;
+use crate::app_state::Shared;
 use crate::backend::BackendService;
 use crate::history::{ClipboardItem, filter_history};
 use crate::pickers::{Emoji, Kaomoji, SymbolItem};
@@ -66,6 +67,7 @@ fn default_expanded() -> bool {
 
 pub struct Popup {
     pub backend: Arc<BackendService>,
+    pub shared: Shared,
     pub settings: AppSettings,
     pub is_dark: bool,
     pub items: Vec<ClipboardItem>,
@@ -81,6 +83,7 @@ pub struct Popup {
     pub symbol: PickerTabState,
     pub symbol_recents: Vec<SymbolItem>,
     last_version: u64,
+    last_settings_version: u64,
 }
 
 impl PickerTabState {
@@ -99,6 +102,7 @@ impl PickerTabState {
 impl Popup {
     pub fn new(
         backend: Arc<BackendService>,
+        shared: Shared,
         settings: AppSettings,
         focus: FocusHandle,
         search_focus: FocusHandle,
@@ -116,6 +120,7 @@ impl Popup {
         // Initial keyboard focus is set by main.rs after the window opens.
         Self {
             backend,
+            shared,
             settings,
             is_dark,
             items,
@@ -131,6 +136,7 @@ impl Popup {
             symbol: PickerTabState::new(symbol_focus),
             symbol_recents,
             last_version: version,
+            last_settings_version: 1,
         }
     }
 
@@ -171,13 +177,26 @@ impl Popup {
         }
     }
 
-    /// Pull a fresh snapshot when the watcher bumped the version. Returns true on change.
+    /// Pull a fresh snapshot when the watcher bumped the version, and reload
+    /// settings when the settings window saved. Returns true on change.
     pub fn poll_backend(&mut self, cx: &mut Context<Self>) -> bool {
+        let mut changed = false;
         let version = self.backend.version();
-        if version == self.last_version {
+        if version != self.last_version {
+            self.last_version = version;
+            changed = true;
+        }
+        let sversion = self.shared.lock().version;
+        if sversion != self.last_settings_version {
+            self.last_settings_version = sversion;
+            let settings = self.shared.lock().settings.clone();
+            self.is_dark = resolve_dark(&settings);
+            self.settings = settings;
+            changed = true;
+        }
+        if !changed {
             return false;
         }
-        self.last_version = version;
         self.refresh_items();
         self.after_filter_change();
         cx.notify();
