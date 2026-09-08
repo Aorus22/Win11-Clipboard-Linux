@@ -4,7 +4,7 @@ milestone_name: GPUI Frontend Port
 status: planning
 progress:
   phases_total: 5
-  phases_complete: 2
+  phases_complete: 3
   requirements_total: 30
   requirements_complete: 0
 ---
@@ -13,10 +13,10 @@ progress:
 
 ## Current Position
 
-Phase: 2 code complete (clipboard popup parity) → next: Phase 3 pickers parity
-Plan: `.planning/phases/02-popup-parity/02-PLAN.md` executed (T1–T4; live Wayland probe green)
-Status: Phase 3 context gathering
-Last activity: 2026-09-08 — Phase 2 code complete (visual sign-off deferred to Phase 5 human check)
+Phase: 3 code complete (pickers parity) → next: Phase 4 settings & setup wizard
+Plan: `.planning/phases/03-pickers/03-PLAN.md` executed (T1–T4; 24 tests, 4-tab smoke green)
+Status: Phase 4 context gathering
+Last activity: 2026-09-08 — Phase 3 code complete (visual sign-off deferred to Phase 5 human check)
 
 ## Project Reference
 
