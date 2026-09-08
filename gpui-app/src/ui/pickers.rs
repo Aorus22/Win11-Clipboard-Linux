@@ -5,11 +5,11 @@
 //! React at the same width). Category pills wrap instead of horizontal-scroll
 //! (documented delta — all categories visible without scrolling).
 
-use gpui::{Context, Window, div, prelude::*, px};
+use gpui::{Context, Entity, Window, div, prelude::*, px, uniform_list};
 
 use super::icons::{self, icon};
 use super::popup::{Popup, SearchWhich, Tab};
-use crate::pickers::{Emoji, KAOMOJI_CATEGORIES, SYMBOL_CATEGORIES, SymbolItem};
+use crate::pickers::{Emoji, KAOMOJI_CATEGORIES, Kaomoji, SYMBOL_CATEGORIES, SymbolItem};
 use crate::theme;
 
 pub fn render_picker_tab(state: &Popup, window: &Window, cx: &mut Context<Popup>) -> gpui::AnyElement {
@@ -339,7 +339,7 @@ fn render_emoji(state: &Popup, window: &Window, cx: &mut Context<Popup>) -> gpui
     let grid = if items.is_empty() {
         empty_state(is_dark, "No emojis found")
     } else {
-        render_glyph_grid(state, window, "emoji-cell", &items, state.emoji.focused_main, 24.0, cx)
+        render_emoji_grid_virtual(state, window, cx.entity(), items)
     };
 
     let footer = footer_preview(is_dark, state.emoji.hovered.clone(), "Click to paste emoji");
@@ -499,6 +499,281 @@ fn render_glyph_grid(
         .into_any_element()
 }
 
+/// Virtualized emoji grid: only visible 40px rows are laid out/shaped.
+/// Chunking is deterministic, so layout matches the full render exactly.
+/// Interactions run through `Entity::update` (the processor only gets `&mut App`).
+fn render_emoji_grid_virtual(
+    state: &Popup,
+    window: &Window,
+    entity: Entity<Popup>,
+    items: Vec<Emoji>,
+) -> gpui::AnyElement {
+    let cols = grid_columns(window).max(1);
+    let row_count = items.len().div_ceil(cols);
+    let focused = state.emoji.focused_main;
+    let is_dark = state.is_dark;
+    let hover = hover_bg(is_dark);
+    let accent = theme::accent();
+    let transparent = gpui::rgba(0x00000000);
+    let scroll = state.emoji_scroll.clone();
+    div()
+        .flex_1()
+        .min_h(px(0.))
+        .overflow_hidden()
+        .p(px(12.))
+        .child(
+            uniform_list("emoji-grid-list", row_count, move |range, _window, _cx| {
+                let mut rows = Vec::new();
+                for row in range {
+                    let mut cells = Vec::new();
+                    for c in 0..cols {
+                        let idx = row * cols + c;
+                        if idx >= items.len() {
+                            break;
+                        }
+                        let item = items[idx].clone();
+                        let e_click = entity.clone();
+                        let e_hover = entity.clone();
+                        let ch_click = item.char.clone();
+                        let ch_hover = item.char.clone();
+                        let nm_hover = item.name.clone();
+                        let glyph = item.char.clone();
+                        let is_focused = idx == focused;
+                        cells.push(
+                            div()
+                                .id(("v-emoji-cell", idx))
+                                .w(px(40.))
+                                .h(px(40.))
+                                .rounded(px(6.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(24.))
+                                .cursor_pointer()
+                                .border_2()
+                                .border_color(if is_focused { accent } else { transparent })
+                                .hover(move |s| s.bg(hover))
+                                .on_hover(move |hovering: &bool, _, cx| {
+                                    let e = e_hover.clone();
+                                    let hov = *hovering;
+                                    let (ch, nm) = (ch_hover.clone(), nm_hover.clone());
+                                    e.update(cx, |popup, cx| {
+                                        popup.emoji.hovered =
+                                            if hov { Some((ch, nm)) } else { None };
+                                        cx.notify();
+                                    });
+                                })
+                                .on_click(move |_, window, cx| {
+                                    window.remove_window();
+                                    let e = e_click.clone();
+                                    let ch = ch_click.clone();
+                                    e.update(cx, |popup, cx| {
+                                        let _ = popup.backend.paste_text(&ch, true);
+                                        popup.refresh_items();
+                                        popup.after_filter_change();
+                                        cx.notify();
+                                    });
+                                })
+                                .child(glyph),
+                        );
+                    }
+                    rows.push(div().flex().flex_row().h(px(40.)).children(cells));
+                }
+                rows
+            })
+            .track_scroll(scroll),
+        )
+        .into_any_element()
+}
+
+/// Virtualized symbol grid (same pattern, 20px glyphs).
+fn render_symbol_grid_virtual(
+    state: &Popup,
+    window: &Window,
+    entity: Entity<Popup>,
+    items: Vec<SymbolItem>,
+) -> gpui::AnyElement {
+    let cols = grid_columns(window).max(1);
+    let row_count = items.len().div_ceil(cols);
+    let focused = state.symbol.focused_main;
+    let is_dark = state.is_dark;
+    let hover = hover_bg(is_dark);
+    let accent = theme::accent();
+    let transparent = gpui::rgba(0x00000000);
+    let scroll = state.symbol_scroll.clone();
+    div()
+        .flex_1()
+        .min_h(px(0.))
+        .overflow_hidden()
+        .p(px(12.))
+        .child(
+            uniform_list("symbol-grid-list", row_count, move |range, _window, _cx| {
+                let mut rows = Vec::new();
+                for row in range {
+                    let mut cells = Vec::new();
+                    for c in 0..cols {
+                        let idx = row * cols + c;
+                        if idx >= items.len() {
+                            break;
+                        }
+                        let item = items[idx].clone();
+                        let e_click = entity.clone();
+                        let e_hover = entity.clone();
+                        let click_item = item.clone();
+                        let hov_char = item.char.clone();
+                        let hov_name = item.name.clone();
+                        let glyph = item.char.clone();
+                        let is_focused = idx == focused;
+                        cells.push(
+                            div()
+                                .id(("v-symbol-cell", idx))
+                                .w(px(40.))
+                                .h(px(40.))
+                                .rounded(px(6.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(20.))
+                                .cursor_pointer()
+                                .border_2()
+                                .border_color(if is_focused { accent } else { transparent })
+                                .hover(move |s| s.bg(hover))
+                                .on_hover(move |hovering: &bool, _, cx| {
+                                    let e = e_hover.clone();
+                                    let hov = *hovering;
+                                    let (ch, nm) = (hov_char.clone(), hov_name.clone());
+                                    e.update(cx, |popup, cx| {
+                                        popup.symbol.hovered =
+                                            if hov { Some((ch, nm)) } else { None };
+                                        cx.notify();
+                                    });
+                                })
+                                .on_click(move |_, window, cx| {
+                                    window.remove_window();
+                                    let e = e_click.clone();
+                                    e.update(cx, |popup, cx| {
+                                        crate::pickers::record_symbol_usage(&click_item);
+                                        popup.symbol_recents =
+                                            crate::pickers::load_recent_symbols();
+                                        let _ = popup.backend.paste_text(&click_item.char, false);
+                                        popup.refresh_items();
+                                        popup.after_filter_change();
+                                        cx.notify();
+                                    });
+                                })
+                                .child(glyph),
+                        );
+                    }
+                    rows.push(div().flex().flex_row().h(px(40.)).children(cells));
+                }
+                rows
+            })
+            .track_scroll(scroll),
+        )
+        .into_any_element()
+}
+
+/// Virtualized kaomoji grid (same pattern, 48px rows of flexible buttons).
+fn render_kaomoji_grid_virtual(
+    state: &Popup,
+    window: &Window,
+    entity: Entity<Popup>,
+    items: Vec<Kaomoji>,
+) -> gpui::AnyElement {
+    let cols = kaomoji_columns(window).max(1);
+    let row_count = items.len().div_ceil(cols);
+    let focused = state.kaomoji.focused_main;
+    let is_dark = state.is_dark;
+    let text_color = if is_dark {
+        theme::dark::text_primary()
+    } else {
+        theme::light::text_primary()
+    };
+    let subtle = if is_dark {
+        theme::dark::border_subtle()
+    } else {
+        theme::light::border()
+    };
+    let hover = hover_bg(is_dark);
+    let accent = theme::accent();
+    let transparent = gpui::rgba(0x00000000);
+    let scroll = state.kaomoji_scroll.clone();
+    div()
+        .flex_1()
+        .min_h(px(0.))
+        .overflow_hidden()
+        .p(px(12.))
+        .child(
+            uniform_list("kaomoji-grid-list", row_count, move |range, _window, _cx| {
+                let mut rows = Vec::new();
+                for row in range {
+                    let mut cells = Vec::new();
+                    for c in 0..cols {
+                        let idx = row * cols + c;
+                        if idx >= items.len() {
+                            break;
+                        }
+                        let item = items[idx].clone();
+                        let e_click = entity.clone();
+                        let e_hover = entity.clone();
+                        let click_text = item.text.clone();
+                        let hov_data = (item.text.clone(), item.category.clone());
+                        let label = item.text.clone();
+                        let is_focused = idx == focused;
+                        cells.push(
+                            div()
+                                .id(("v-kaomoji-cell", idx))
+                                .flex_1()
+                                .h(px(48.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(6.))
+                                .text_size(px(12.25))
+                                .text_color(text_color)
+                                .cursor_pointer()
+                                .border_1()
+                                .border_color(if is_focused { accent } else { transparent })
+                                .hover(move |s| s.bg(hover).border_color(subtle))
+                                .on_hover(move |hovering: &bool, _, cx| {
+                                    let e = e_hover.clone();
+                                    let hov = *hovering;
+                                    let h = hov_data.clone();
+                                    e.update(cx, |popup, cx| {
+                                        popup.kaomoji.hovered = if hov { Some(h) } else { None };
+                                        cx.notify();
+                                    });
+                                })
+                                .on_click(move |_, window, cx| {
+                                    window.remove_window();
+                                    let e = e_click.clone();
+                                    let t = click_text.clone();
+                                    e.update(cx, |popup, cx| {
+                                        let _ = popup.backend.paste_text(&t, false);
+                                        popup.refresh_items();
+                                        popup.after_filter_change();
+                                        cx.notify();
+                                    });
+                                })
+                                .child(label),
+                        );
+                    }
+                    rows.push(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .h(px(48.))
+                            .gap(px(8.))
+                            .children(cells),
+                    );
+                }
+                rows
+            })
+            .track_scroll(scroll),
+        )
+        .into_any_element()
+}
+
 // --- Kaomoji tab ---
 
 fn render_kaomoji(state: &Popup, window: &Window, cx: &mut Context<Popup>) -> gpui::AnyElement {
@@ -536,77 +811,7 @@ fn render_kaomoji(state: &Popup, window: &Window, cx: &mut Context<Popup>) -> gp
     let grid = if items.is_empty() {
         empty_state(is_dark, "No kaomojis found")
     } else {
-        let cols = kaomoji_columns(window);
-        let mut rows: Vec<gpui::AnyElement> = Vec::new();
-        for (row, chunk) in items.chunks(cols).enumerate() {
-            let mut cells: Vec<gpui::AnyElement> = Vec::new();
-            for (c, item) in chunk.iter().enumerate() {
-                let idx = row * cols + c;
-                let text = item.text.clone();
-                let cat = item.category.clone();
-                let is_focused = idx == state.kaomoji.focused_main;
-                let enter = (text.clone(), cat.clone());
-                cells.push(
-                    div()
-                        .id(("kaomoji-cell", idx))
-                        .flex_1()
-                        .h(px(48.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(6.))
-                        .text_size(px(12.25))
-                        .text_color(if is_dark {
-                            theme::dark::text_primary()
-                        } else {
-                            theme::light::text_primary()
-                        })
-                        .cursor_pointer()
-                        .border_1()
-                        .border_color(if is_focused {
-                            theme::accent()
-                        } else {
-                            gpui::rgba(0x00000000)
-                        })
-                        .hover(|s| {
-                            s.bg(hover_bg(is_dark)).border_color(if is_dark {
-                                theme::dark::border_subtle()
-                            } else {
-                                theme::light::border()
-                            })
-                        })
-                        .on_hover(cx.listener(move |this, hovering: &bool, _, cx| {
-                            this.kaomoji.hovered = if *hovering { Some(enter.clone()) } else { None };
-                            cx.notify();
-                        }))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            let t = text.clone();
-                            this.paste_kaomoji(&t, window, cx);
-                        }))
-                        .child(item.text.clone())
-                        .into_any_element(),
-                );
-            }
-            rows.push(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap(px(8.))
-                    .children(cells)
-                    .into_any_element(),
-            );
-        }
-        div()
-            .id("kaomoji-grid-scroll")
-            .flex_1()
-            .min_h(px(0.))
-            .overflow_y_scroll()
-            .p(px(12.))
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .children(rows)
-            .into_any_element()
+        render_kaomoji_grid_virtual(state, window, cx.entity(), items)
     };
 
     let footer = footer_preview(is_dark, state.kaomoji.hovered.clone(), "Click to paste kaomoji");
@@ -669,25 +874,7 @@ fn render_symbol(state: &Popup, window: &Window, cx: &mut Context<Popup>) -> gpu
     let grid = if items.is_empty() {
         empty_state(is_dark, "No symbols found")
     } else {
-        let cols = grid_columns(window);
-        let refs: Vec<&SymbolItem> = items.iter().collect();
-        div()
-            .id("symbol-grid-scroll")
-            .flex_1()
-            .min_h(px(0.))
-            .overflow_y_scroll()
-            .p(px(12.))
-            .child(render_symbol_rows(
-                state,
-                "symbol-cell",
-                &refs.iter().map(|s| (*s).clone()).collect::<Vec<_>>(),
-                cols,
-                40.0,
-                20.0,
-                state.symbol.focused_main,
-                cx,
-            ))
-            .into_any_element()
+        render_symbol_grid_virtual(state, window, cx.entity(), items)
     };
 
     let footer = footer_preview(is_dark, state.symbol.hovered.clone(), "Click to paste symbol");

@@ -6,7 +6,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    Context, FocusHandle, Focusable, KeyDownEvent, Render, Window, div, prelude::*, px,
+    Context, FocusHandle, Focusable, KeyDownEvent, Render, ScrollStrategy,
+    UniformListScrollHandle, Window, div, prelude::*, px,
 };
 use serde::{Deserialize, Serialize};
 
@@ -82,6 +83,9 @@ pub struct Popup {
     pub kaomoji: PickerTabState,
     pub symbol: PickerTabState,
     pub symbol_recents: Vec<SymbolItem>,
+    pub emoji_scroll: UniformListScrollHandle,
+    pub kaomoji_scroll: UniformListScrollHandle,
+    pub symbol_scroll: UniformListScrollHandle,
     last_version: u64,
     last_settings_version: u64,
     last_settings_mtime: Option<std::time::SystemTime>,
@@ -136,6 +140,9 @@ impl Popup {
             kaomoji: PickerTabState::new(kaomoji_focus),
             symbol: PickerTabState::new(symbol_focus),
             symbol_recents,
+            emoji_scroll: UniformListScrollHandle::default(),
+            kaomoji_scroll: UniformListScrollHandle::default(),
+            symbol_scroll: UniformListScrollHandle::default(),
             last_version: version,
             last_settings_version: 1,
             last_settings_mtime: crate::settings::settings_mtime(),
@@ -454,6 +461,14 @@ impl Popup {
                 if let Some(n) = Self::grid_move(focused, key, ctrl, cols, len) {
                     if let Some(p) = self.picker_mut(tab) {
                         p.focused_main = n;
+                    }
+                    // Keep the focused row visible in the virtualized grid.
+                    let row = n / cols.max(1);
+                    match tab {
+                        Tab::Emoji => self.emoji_scroll.scroll_to_item(row, ScrollStrategy::Center),
+                        Tab::Kaomoji => self.kaomoji_scroll.scroll_to_item(row, ScrollStrategy::Center),
+                        Tab::Symbols => self.symbol_scroll.scroll_to_item(row, ScrollStrategy::Center),
+                        Tab::Clipboard => {}
                     }
                     cx.notify();
                 }
