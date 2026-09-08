@@ -22,7 +22,13 @@ use win11_clipboard_history_lib::{
     shortcut_setup,
 };
 
-const COPY_PATH: &str = "/usr/bin/win11-clipboard-history";
+/// Command shown/copied for manual shortcut setup — always THIS binary.
+fn toggle_command() -> String {
+    let exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "win11-clipboard-history-gpui".to_string());
+    format!("{exe} --toggle")
+}
 
 pub struct WizardState {
     pub shared: Shared,
@@ -117,13 +123,19 @@ impl WizardState {
     fn register_shortcut(&mut self, cx: &mut Context<Self>) {
         self.registering = true;
         cx.notify();
-        match shortcut_setup::register_de_shortcut() {
-            Ok(_) => {
-                self.shortcut_registered = true;
-                // Parity micro-delta: React advances after a 1.5s beat; advance at once.
-                self.step = 3;
+        // GNOME: own gpui-pathed registration; elsewhere fall through to the
+        // manual instructions (backend writers target the Tauri wrapper).
+        if crate::gnome_shortcut::is_gnome() {
+            match crate::gnome_shortcut::register() {
+                Ok(_) => {
+                    self.shortcut_registered = true;
+                    // Parity micro-delta: React advances after a 1.5s beat; advance at once.
+                    self.step = 3;
+                }
+                Err(_) => self.show_manual = true,
             }
-            Err(_) => self.show_manual = true,
+        } else {
+            self.show_manual = true;
         }
         self.registering = false;
         cx.notify();
@@ -143,7 +155,7 @@ impl WizardState {
     }
 
     fn copy_path(&mut self, cx: &mut Context<Self>) {
-        if self.backend.copy_text(COPY_PATH).is_ok() {
+        if self.backend.copy_text(&toggle_command()).is_ok() {
             self.copied = true;
             cx.notify();
         }

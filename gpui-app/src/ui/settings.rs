@@ -16,7 +16,7 @@ use crate::app_state::{self, Shared};
 use crate::backend::BackendService;
 use crate::settings::{AppSettings, resolve_dark};
 use crate::theme;
-use win11_clipboard_history_lib::{autostart_manager, permission_checker, rendering_env, shortcut_setup};
+use win11_clipboard_history_lib::rendering_env;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeChoice {
@@ -268,10 +268,21 @@ impl SettingsState {
 
     fn register_shortcuts(&mut self, cx: &mut Context<Self>) {
         // Synchronous (parity outcome; no spinner — the call blocks briefly).
-        self.shortcut_status = Some(
-            shortcut_setup::register_de_shortcut()
-                .map(|_| "Shortcuts registered successfully!".to_string()),
-        );
+        // GNOME: own gpui-pathed registration. Elsewhere: manual instructions with
+        // our binary path (backend DE writers target the Tauri wrapper — not reused).
+        if crate::gnome_shortcut::is_gnome() {
+            self.shortcut_status = Some(
+                crate::gnome_shortcut::register()
+                    .map(|_| "Shortcuts registered successfully!".to_string()),
+            );
+        } else {
+            let exe = std::env::current_exe()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "win11-clipboard-history-gpui".to_string());
+            self.shortcut_status = Some(Err(format!(
+                "Automatic registration supports GNOME. Bind Super+V to `{exe} --toggle` manually."
+            )));
+        }
         cx.notify();
     }
 

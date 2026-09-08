@@ -260,26 +260,39 @@ impl Popup {
 
     // --- Picker flows (parity with `paste_text` command + picker hooks) ---
 
-    fn paste_picker_text(&mut self, text: &str, record_emoji: bool, cx: &mut Context<Self>) {
-        cx.hide();
+    fn paste_picker_text(
+        &mut self,
+        text: &str,
+        record_emoji: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Close (don't hide): the poll loop reopens on toggle. Per-window close
+        // keeps the settings window alive, unlike cx.hide().
+        window.remove_window();
         let _ = focus_manager::restore_focused_window();
         let _ = self.backend.paste_text(text, record_emoji);
         cx.notify();
     }
 
-    pub fn paste_emoji(&mut self, ch: &str, cx: &mut Context<Self>) {
-        self.paste_picker_text(ch, true, cx);
+    pub fn paste_emoji(&mut self, ch: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.paste_picker_text(ch, true, window, cx);
     }
 
-    pub fn paste_kaomoji(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.paste_picker_text(text, false, cx);
+    pub fn paste_kaomoji(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.paste_picker_text(text, false, window, cx);
     }
 
-    pub fn paste_symbol(&mut self, symbol: &SymbolItem, cx: &mut Context<Self>) {
+    pub fn paste_symbol(
+        &mut self,
+        symbol: &SymbolItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let ch = symbol.char.clone();
         crate::pickers::record_symbol_usage(symbol);
         self.symbol_recents = crate::pickers::load_recent_symbols();
-        self.paste_picker_text(&ch, false, cx);
+        self.paste_picker_text(&ch, false, window, cx);
     }
 
     pub fn emoji_filtered(&self) -> Vec<Emoji> {
@@ -462,24 +475,23 @@ impl Popup {
     }
 
     fn paste_picker_at(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
-        let _ = window;
         match tab {
             Tab::Emoji => {
                 let idx = self.emoji.focused_main;
                 if let Some(e) = self.emoji_filtered().get(idx).cloned() {
-                    self.paste_emoji(&e.char, cx);
+                    self.paste_emoji(&e.char, window, cx);
                 }
             }
             Tab::Kaomoji => {
                 let idx = self.kaomoji.focused_main;
                 if let Some(k) = self.kaomoji_filtered().get(idx).cloned() {
-                    self.paste_kaomoji(&k.text, cx);
+                    self.paste_kaomoji(&k.text, window, cx);
                 }
             }
             Tab::Symbols => {
                 let idx = self.symbol.focused_main;
                 if let Some(s) = self.symbol_filtered().get(idx).cloned() {
-                    self.paste_symbol(&s, cx);
+                    self.paste_symbol(&s, window, cx);
                 }
             }
             Tab::Clipboard => {}
@@ -493,7 +505,8 @@ impl Popup {
             return;
         };
         // Parity with the Tauri `paste_item` command: hide → restore focus → paste.
-        cx.hide();
+        // Per-window close (poll loop reopens on toggle).
+        window.remove_window();
         let _ = focus_manager::restore_focused_window();
         if self.backend.paste(&item).is_err() {
             self.refresh_items();
@@ -580,7 +593,7 @@ impl Popup {
             if self.tab == Tab::Clipboard && self.search_visible {
                 self.close_search(window, cx);
             } else {
-                cx.hide();
+                window.remove_window();
             }
             cx.stop_propagation();
             return;
@@ -1047,8 +1060,8 @@ fn render_drag_strip(is_dark: bool, cx: &mut Context<Popup>) -> impl IntoElement
                 } else {
                     gpui::rgba(0x00000080)
                 })
-                .on_click(cx.listener(|_, _, _, cx| {
-                    cx.hide();
+                .on_click(cx.listener(|_, _, window, _| {
+                    window.remove_window();
                 }))
                 .child(icon(icons::X, px(20.)).flex_shrink_0()),
         )

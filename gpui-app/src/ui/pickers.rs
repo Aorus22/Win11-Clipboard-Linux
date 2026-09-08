@@ -310,9 +310,9 @@ fn render_emoji(state: &Popup, window: &Window, cx: &mut Context<Popup>) -> gpui
             24.0,
             state.emoji.focused_recent,
             {
-                move |this, emoji: &Emoji, cx| {
+                move |this, emoji: &Emoji, window, cx| {
                     let ch = emoji.char.clone();
-                    this.paste_emoji(&ch, cx);
+                    this.paste_emoji(&ch, window, cx);
                 }
             },
             {
@@ -404,7 +404,7 @@ fn render_glyph_rows<F, H>(
     cx: &mut Context<Popup>,
 ) -> gpui::AnyElement
 where
-    F: Fn(&mut Popup, &Emoji, &mut Context<Popup>) + 'static + Clone,
+    F: Fn(&mut Popup, &Emoji, &mut Window, &mut Context<Popup>) + 'static + Clone,
     H: Fn(&mut Popup, Option<&Emoji>, &mut Context<Popup>) + 'static + Clone,
 {
     let is_dark = state.is_dark;
@@ -445,8 +445,8 @@ where
                         }
                         cx.notify();
                     }))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        on_select(this, &leave, cx);
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        on_select(this, &leave, window, cx);
                     }))
                     .child(item.char.clone())
                     .into_any_element(),
@@ -488,9 +488,9 @@ fn render_glyph_grid(
             40.0,
             glyph,
             focused,
-            |this, emoji: &Emoji, cx| {
+            |this, emoji: &Emoji, window, cx| {
                 let ch = emoji.char.clone();
-                this.paste_emoji(&ch, cx);
+                this.paste_emoji(&ch, window, cx);
             },
             |this, emoji: Option<&Emoji>, _cx| {
                 this.emoji.hovered = emoji.map(|e| (e.char.clone(), e.name.clone()));
@@ -580,9 +580,9 @@ fn render_kaomoji(state: &Popup, window: &Window, cx: &mut Context<Popup>) -> gp
                             this.kaomoji.hovered = if *hovering { Some(enter.clone()) } else { None };
                             cx.notify();
                         }))
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                        .on_click(cx.listener(move |this, _, window, cx| {
                             let t = text.clone();
-                            this.paste_kaomoji(&t, cx);
+                            this.paste_kaomoji(&t, window, cx);
                         }))
                         .child(item.text.clone())
                         .into_any_element(),
@@ -742,8 +742,8 @@ fn render_symbol_rows(
                         };
                         cx.notify();
                     }))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.paste_symbol(&leave, cx);
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.paste_symbol(&leave, window, cx);
                     }))
                     .child(glyph_text)
                     .into_any_element(),
