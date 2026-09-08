@@ -11,6 +11,83 @@ use super::icons::{self, icon};
 use super::popup::{Popup, SearchWhich};
 use crate::theme;
 
+pub fn prev_char_boundary(text: &str, cursor: usize) -> usize {
+    let mut i = cursor.min(text.len());
+    while i > 0 {
+        i -= 1;
+        if text.is_char_boundary(i) {
+            break;
+        }
+    }
+    i
+}
+
+pub fn next_char_boundary(text: &str, cursor: usize) -> usize {
+    let mut i = (cursor + 1).min(text.len());
+    while i < text.len() && !text.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
+/// Shared single-line editing semantics (search fields + settings text fields):
+/// Backspace/Delete/arrows/Home/End + printable-char insertion. Returns consumed.
+pub fn edit_text(text: &mut String, cursor: &mut usize, event: &KeyDownEvent) -> bool {
+    *cursor = (*cursor).min(text.len());
+    let key = event.keystroke.key.as_str();
+    let mods = &event.keystroke.modifiers;
+    if mods.control || mods.alt || mods.platform {
+        return false;
+    }
+    match key {
+        "backspace" => {
+            if *cursor > 0 {
+                let prev = prev_char_boundary(text, *cursor);
+                text.drain(prev..*cursor);
+                *cursor = prev;
+            }
+            true
+        }
+        "delete" => {
+            if *cursor < text.len() {
+                let next = next_char_boundary(text, *cursor);
+                text.drain(*cursor..next);
+            }
+            true
+        }
+        "left" => {
+            *cursor = prev_char_boundary(text, *cursor);
+            true
+        }
+        "right" => {
+            *cursor = next_char_boundary(text, *cursor);
+            true
+        }
+        "home" => {
+            *cursor = 0;
+            true
+        }
+        "end" => {
+            *cursor = text.len();
+            true
+        }
+        _ => {
+            let ch = event
+                .keystroke
+                .key_char
+                .clone()
+                .unwrap_or_else(|| event.keystroke.key.clone());
+            if ch.chars().count() == 1 {
+                text.insert_str(*cursor, &ch);
+                *cursor += ch.len();
+                true
+            } else {
+                false
+            }
+        }
+    }
+}
+
 pub struct SearchState {
     pub text: String,
     /// Cursor as a char-boundary byte index into `text`.
@@ -35,79 +112,16 @@ impl SearchState {
     }
 
     fn prev_boundary(&self) -> usize {
-        let mut i = self.cursor;
-        while i > 0 {
-            i -= 1;
-            if self.text.is_char_boundary(i) {
-                break;
-            }
-        }
-        i
+        prev_char_boundary(&self.text, self.cursor)
     }
 
     fn next_boundary(&self) -> usize {
-        let mut i = (self.cursor + 1).min(self.text.len());
-        while i < self.text.len() && !self.text.is_char_boundary(i) {
-            i += 1;
-        }
-        i
+        next_char_boundary(&self.text, self.cursor)
     }
 
     /// Returns true if the keystroke was consumed.
     pub fn handle_key(&mut self, event: &KeyDownEvent) -> bool {
-        let key = event.keystroke.key.as_str();
-        let mods = &event.keystroke.modifiers;
-        if mods.control || mods.alt || mods.platform {
-            return false;
-        }
-        match key {
-            "backspace" => {
-                if self.cursor > 0 {
-                    let prev = self.prev_boundary();
-                    self.text.drain(prev..self.cursor);
-                    self.cursor = prev;
-                }
-                true
-            }
-            "delete" => {
-                if self.cursor < self.text.len() {
-                    let next = self.next_boundary();
-                    self.text.drain(self.cursor..next);
-                }
-                true
-            }
-            "left" => {
-                self.cursor = self.prev_boundary();
-                true
-            }
-            "right" => {
-                self.cursor = self.next_boundary();
-                true
-            }
-            "home" => {
-                self.cursor = 0;
-                true
-            }
-            "end" => {
-                self.cursor = self.text.len();
-                true
-            }
-            _ => {
-                // Printable single char (mirrors `isPrintableKey`: len 1, no modifiers).
-                let ch = event
-                    .keystroke
-                    .key_char
-                    .clone()
-                    .unwrap_or_else(|| event.keystroke.key.clone());
-                if ch.chars().count() == 1 {
-                    self.text.insert_str(self.cursor, &ch);
-                    self.cursor += ch.len();
-                    true
-                } else {
-                    false
-                }
-            }
-        }
+        edit_text(&mut self.text, &mut self.cursor, event)
     }
 
     pub fn render(&self, is_dark: bool, opacity: f32, window: &Window, cx: &mut Context<Popup>) -> impl IntoElement {

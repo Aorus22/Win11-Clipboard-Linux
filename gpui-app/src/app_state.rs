@@ -16,12 +16,23 @@ use crate::settings::{self, AppSettings};
 pub struct SharedConfig {
     pub settings: AppSettings,
     pub version: u64,
+    /// Set by the settings window Reset action; the main poll loop opens the
+    /// wizard window and clears it (parity: `show-setup-wizard` event).
+    pub open_wizard_requested: bool,
+    /// Set by the wizard on completion when no popup is open; the main poll
+    /// loop opens the popup window and clears it.
+    pub open_popup_requested: bool,
 }
 
 pub type Shared = Arc<Mutex<SharedConfig>>;
 
 pub fn shared(settings: AppSettings) -> Shared {
-    Arc::new(Mutex::new(SharedConfig { settings, version: 1 }))
+    Arc::new(Mutex::new(SharedConfig {
+        settings,
+        version: 1,
+        open_wizard_requested: false,
+        open_popup_requested: false,
+    }))
 }
 
 /// Persist settings + sync the backend + bump (parity with `set_user_settings`).

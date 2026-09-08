@@ -125,6 +125,16 @@ impl BackendService {
         self.emoji.lock().get_recent()
     }
 
+    /// Copy text to the system clipboard WITHOUT simulating paste
+    /// (wizard "copy path" parity with `navigator.clipboard.writeText`).
+    pub fn copy_text(&self, text: &str) -> Result<(), String> {
+        let mut manager = self.manager.lock();
+        manager.mark_text_as_pasted(text);
+        manager.set_text_robust(text)?;
+        self.bump();
+        Ok(())
+    }
+
     /// Mark pasted text so picker insertions don't re-enter history
     /// (mirrors `mark_text_as_pasted`, used by Phase 3 pickers).
     pub fn mark_text_as_pasted(&self, text: &str) {

@@ -23,6 +23,112 @@ fn alpha_byte(opacity: f32) -> u32 {
     (opacity.clamp(0.0, 1.0) * 255.0).round() as u32
 }
 
+/// White/black with fractional alpha (Tailwind `white/5`, `black/20`, …).
+pub fn white_pct(pct: f32) -> Rgba {
+    rgba(0xffffff00 | alpha_byte(pct))
+}
+pub fn black_pct(pct: f32) -> Rgba {
+    rgba(0x00000000 | alpha_byte(pct))
+}
+
+/// Tailwind gray palette (used verbatim by the settings + wizard UI).
+pub mod gray {
+    use super::*;
+    pub fn g50() -> Rgba {
+        rgb(0xf9fafb)
+    }
+    pub fn g100() -> Rgba {
+        rgb(0xf3f4f6)
+    }
+    pub fn g200() -> Rgba {
+        rgb(0xe5e7eb)
+    }
+    pub fn g300() -> Rgba {
+        rgb(0xd1d5db)
+    }
+    pub fn g400() -> Rgba {
+        rgb(0x9ca3af)
+    }
+    pub fn g500() -> Rgba {
+        rgb(0x6b7280)
+    }
+    pub fn g600() -> Rgba {
+        rgb(0x4b5563)
+    }
+    pub fn g700() -> Rgba {
+        rgb(0x374151)
+    }
+    pub fn g800() -> Rgba {
+        rgb(0x1f2937)
+    }
+    pub fn g900() -> Rgba {
+        rgb(0x111827)
+    }
+}
+
+/// Settings-page surface tints.
+pub mod tint {
+    use super::*;
+    pub fn success_bg_dark() -> Rgba {
+        rgba(0x6ccb5f26)
+    }
+    pub fn warning_bg_dark() -> Rgba {
+        rgba(0xfcb90026)
+    }
+    pub fn error_bg_dark() -> Rgba {
+        rgba(0xff5f5f26)
+    }
+    pub fn green50() -> Rgba {
+        rgb(0xf0fdf4)
+    }
+    pub fn green200() -> Rgba {
+        rgb(0xbbf7d0)
+    }
+    pub fn green600() -> Rgba {
+        rgb(0x16a34a)
+    }
+    pub fn green700() -> Rgba {
+        rgb(0x15803d)
+    }
+    pub fn amber50() -> Rgba {
+        rgb(0xfffbeb)
+    }
+    pub fn amber200() -> Rgba {
+        rgb(0xfde68a)
+    }
+    pub fn amber700() -> Rgba {
+        rgb(0xb45309)
+    }
+    pub fn red50() -> Rgba {
+        rgb(0xfef2f2)
+    }
+    pub fn red400() -> Rgba {
+        rgb(0xf87171)
+    }
+    pub fn red500() -> Rgba {
+        rgb(0xef4444)
+    }
+    pub fn red600() -> Rgba {
+        rgb(0xdc2626)
+    }
+    pub fn yellow300() -> Rgba {
+        rgb(0xfcd34d)
+    }
+    pub fn yellow400() -> Rgba {
+        rgb(0xfbbf24)
+    }
+    pub fn yellow700() -> Rgba {
+        rgb(0xa16207)
+    }
+    pub fn yellow800() -> Rgba {
+        rgb(0x92400e)
+    }
+    /// Settings light page background (custom `#f0f3f9` in React).
+    pub fn settings_light_bg() -> Rgba {
+        rgb(0xf0f3f9)
+    }
+}
+
 /// Tertiary background dispatch (port of `getTertiaryBackgroundStyle`).
 pub fn tertiary_bg(is_dark: bool, tertiary_opacity: f32) -> Rgba {
     if is_dark {
