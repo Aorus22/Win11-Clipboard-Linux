@@ -8,7 +8,7 @@
 use gpui::{Context, FocusHandle, KeyDownEvent, Window, div, prelude::*, px};
 
 use super::icons::{self, icon};
-use super::popup::Popup;
+use super::popup::{Popup, SearchWhich};
 use crate::theme;
 
 pub struct SearchState {
@@ -111,6 +111,18 @@ impl SearchState {
     }
 
     pub fn render(&self, is_dark: bool, opacity: f32, window: &Window, cx: &mut Context<Popup>) -> impl IntoElement {
+        self.render_for(SearchWhich::Clipboard, "Search history...", is_dark, opacity, window, cx)
+    }
+
+    pub fn render_for(
+        &self,
+        which: SearchWhich,
+        placeholder: &str,
+        is_dark: bool,
+        opacity: f32,
+        window: &Window,
+        cx: &mut Context<Popup>,
+    ) -> impl IntoElement {
         // Colors mirror SearchBar.tsx exactly.
         let text = if is_dark {
             theme::dark::text_primary()
@@ -148,9 +160,9 @@ impl SearchState {
                     .flex_1()
                     .text_size(px(12.25))
                     .text_color(dim)
-                    .child("Search history...")
+                    .child(placeholder.to_string())
             }))
-            .child(self.render_buttons(is_dark, cx))
+            .child(self.render_buttons(which, is_dark, cx))
     }
 
     fn render_text(&self, text: gpui::Rgba) -> impl IntoElement {
@@ -170,7 +182,7 @@ impl SearchState {
             .child(after.to_string())
     }
 
-    fn render_buttons(&self, is_dark: bool, cx: &mut Context<Popup>) -> impl IntoElement {
+    fn render_buttons(&self, which: SearchWhich, is_dark: bool, cx: &mut Context<Popup>) -> impl IntoElement {
         let secondary = if is_dark {
             theme::dark::text_secondary()
         } else {
@@ -187,53 +199,75 @@ impl SearchState {
         } else {
             theme::light::text_primary()
         };
+        let has_text = !self.text.is_empty();
+        let regex_mode = self.regex_mode;
         div()
             .flex()
             .flex_row()
             .items_center()
             .gap(px(4.))
-            .children((!self.text.is_empty()).then(|| {
-                div()
-                    .id("search-clear")
-                    .p(px(4.))
-                    .rounded(px(4.))
-                    .cursor_pointer()
-                    .text_color(dim)
-                    .hover(move |s| s.text_color(primary).bg(hover_bg))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.search.clear();
-                        this.after_filter_change();
-                        cx.notify();
-                    }))
-                    .child(icon(icons::X, px(14.)).flex_shrink_0())
-            }))
-            .child(
-                div()
-                    .id("search-regex")
-                    .p(px(4.))
-                    .rounded(px(4.))
-                    .cursor_pointer()
-                    .bg(if self.regex_mode {
-                        gpui::rgba(0x0078d422)
-                    } else {
-                        gpui::rgba(0x00000000)
-                    })
-                    .text_color(if self.regex_mode {
-                        theme::accent()
-                    } else {
-                        secondary
-                    })
-                    .hover(|s| s.bg(if self.regex_mode {
-                        gpui::rgba(0x0078d422)
-                    } else {
-                        hover_bg
-                    }))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.search.regex_mode = !this.search.regex_mode;
-                        this.after_filter_change();
-                        cx.notify();
-                    }))
-                    .child(icon(icons::REGEX, px(14.)).flex_shrink_0()),
-            )
+            .children(has_text.then(|| clear_button(which, dim, primary, hover_bg, cx)))
+            .child(regex_button(which, regex_mode, secondary, hover_bg, cx))
     }
+}
+
+fn clear_button(
+    which: SearchWhich,
+    dim: gpui::Rgba,
+    primary: gpui::Rgba,
+    hover_bg: gpui::Rgba,
+    cx: &mut Context<Popup>,
+) -> impl IntoElement {
+    div()
+        .id("search-clear")
+        .p(px(4.))
+        .rounded(px(4.))
+        .cursor_pointer()
+        .text_color(dim)
+        .hover(move |s| s.text_color(primary).bg(hover_bg))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            let s = this.search_mut(which);
+            s.clear();
+            this.after_picker_filter_change(which);
+            cx.notify();
+        }))
+        .child(icon(icons::X, px(14.)).flex_shrink_0())
+}
+
+fn regex_button(
+    which: SearchWhich,
+    regex_mode: bool,
+    secondary: gpui::Rgba,
+    hover_bg: gpui::Rgba,
+    cx: &mut Context<Popup>,
+) -> impl IntoElement {
+    div()
+        .id("search-regex")
+        .p(px(4.))
+        .rounded(px(4.))
+        .cursor_pointer()
+        .bg(if regex_mode {
+            gpui::rgba(0x0078d422)
+        } else {
+            gpui::rgba(0x00000000)
+        })
+        .text_color(if regex_mode {
+            theme::accent()
+        } else {
+            secondary
+        })
+        .hover(move |s| {
+            s.bg(if regex_mode {
+                gpui::rgba(0x0078d422)
+            } else {
+                hover_bg
+            })
+        })
+        .on_click(cx.listener(move |this, _, _, cx| {
+            let s = this.search_mut(which);
+            s.regex_mode = !s.regex_mode;
+            this.after_picker_filter_change(which);
+            cx.notify();
+        }))
+        .child(icon(icons::REGEX, px(14.)).flex_shrink_0())
 }

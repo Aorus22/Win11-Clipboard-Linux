@@ -25,3 +25,4 @@ pub const LAYOUT_LIST: &str = "layout-list";
 pub const REGEX: &str = "regex";
 pub const LINK: &str = "link";
 pub const MAIL: &str = "mail";
+pub const CLOCK: &str = "clock";

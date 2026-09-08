@@ -22,7 +22,7 @@ mod ui;
 
 use backend::BackendService;
 use geometry::{MonitorRect, bottom_center, clamp_to_monitor, cursor_position};
-use ui::popup::Popup;
+use ui::popup::{Popup, Tab};
 use win11_clipboard_history_lib::{focus_manager, session};
 
 /// Separate app-id from the Tauri build so both can coexist (SYS-06).
@@ -141,11 +141,34 @@ fn main() {
             let origin = initial_origin(cx);
             let backend = Arc::clone(&backend);
             let settings = settings.clone();
+            // Verification aid (Phase 3+): open a specific tab to exercise its
+            // render path headlessly, e.g. GPUI_SMOKE_TAB=emoji.
+            let initial_tab = match std::env::var("GPUI_SMOKE_TAB").as_deref() {
+                Ok("emoji") => Tab::Emoji,
+                Ok("kaomoji") => Tab::Kaomoji,
+                Ok("symbols") => Tab::Symbols,
+                _ => Tab::Clipboard,
+            };
             let handle = cx
                 .open_window(popup_options(origin), |_window, cx: &mut App| {
                     let focus = cx.focus_handle();
                     let search_focus = cx.focus_handle();
-                    cx.new(|cx| Popup::new(backend, settings, focus, search_focus, cx))
+                    let emoji_focus = cx.focus_handle();
+                    let kaomoji_focus = cx.focus_handle();
+                    let symbol_focus = cx.focus_handle();
+                    cx.new(|cx| {
+                        Popup::new(
+                            backend,
+                            settings,
+                            focus,
+                            search_focus,
+                            emoji_focus,
+                            kaomoji_focus,
+                            symbol_focus,
+                            initial_tab,
+                            cx,
+                        )
+                    })
                 })
                 .expect("failed to open GPUI popup window");
 

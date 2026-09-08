@@ -6,6 +6,7 @@
 pub mod header;
 pub mod history_item;
 pub mod icons;
+pub mod pickers;
 pub mod popup;
 pub mod search;
 pub mod tabbar;

@@ -194,3 +194,49 @@ impl BackendService {
         self.max_history_size
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_settings() -> AppSettings {
+        AppSettings::default()
+    }
+
+    #[test]
+    fn service_boots_with_own_history_path() {
+        let service = BackendService::new(&test_settings());
+        assert!(history_path().ends_with("history.json"));
+        assert!(history_path()
+            .to_string_lossy()
+            .contains("win11-clipboard-history-gpui"));
+        let _ = service.snapshot();
+    }
+
+    /// Live clipboard round-trip on the dev machine: write via the reused
+    /// backend path, read back via the same path. Skips keystroke simulation
+    /// (would inject Ctrl+V into whatever has focus).
+    #[test]
+    fn clipboard_write_round_trip() {
+        let service = BackendService::new(&test_settings());
+        let probe = format!("gpui-test-probe-{}", std::process::id());
+        {
+            let mut manager = service.manager.lock();
+            manager
+                .set_text_robust(&probe)
+                .expect("write to system clipboard");
+            let back = manager.get_current_text().expect("read back");
+            assert_eq!(back, probe);
+        }
+        // Toggle/clear smoke on a scratch item (no persistence assertions).
+        {
+            let mut manager = service.manager.lock();
+            let before = manager.get_history().len();
+            manager.add_text(probe.clone(), None);
+            assert_eq!(manager.get_history().len(), before + 1);
+            let id = manager.get_history()[0].id.clone();
+            manager.remove_item(&id);
+            assert_eq!(manager.get_history().len(), before);
+        }
+    }
+}

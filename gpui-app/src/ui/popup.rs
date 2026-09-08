@@ -17,6 +17,7 @@ use super::search::SearchState;
 use super::tabbar::render_tabbar;
 use crate::backend::BackendService;
 use crate::history::{ClipboardItem, filter_history};
+use crate::pickers::{Emoji, Kaomoji, SymbolItem};
 use crate::settings::{AppSettings, config_dir, resolve_dark};
 use crate::theme;
 use win11_clipboard_history_lib::focus_manager;
@@ -27,6 +28,26 @@ pub enum Tab {
     Symbols,
     Emoji,
     Kaomoji,
+}
+
+/// Which search field — clipboard + one per picker (parity: independent state).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchWhich {
+    Clipboard,
+    Emoji,
+    Kaomoji,
+    Symbol,
+}
+
+/// Per-picker UI state (mirrors the React picker hooks' local state).
+pub struct PickerTabState {
+    pub search: SearchState,
+    pub focused_main: usize,
+    pub focused_recent: usize,
+    pub focused_category: usize,
+    pub category: Option<String>,
+    /// (glyph/text, name/category) for the footer preview.
+    pub hovered: Option<(String, String)>,
 }
 
 const UI_STATE_FILE: &str = "ui_state.json";
@@ -55,7 +76,24 @@ pub struct Popup {
     pub compact: bool,
     pub pinned_expanded: bool,
     pub focus: FocusHandle,
+    pub emoji: PickerTabState,
+    pub kaomoji: PickerTabState,
+    pub symbol: PickerTabState,
+    pub symbol_recents: Vec<SymbolItem>,
     last_version: u64,
+}
+
+impl PickerTabState {
+    fn new(search_focus: FocusHandle) -> Self {
+        Self {
+            search: SearchState::new(search_focus),
+            focused_main: 0,
+            focused_recent: 0,
+            focused_category: 0,
+            category: None,
+            hovered: None,
+        }
+    }
 }
 
 impl Popup {
@@ -64,26 +102,72 @@ impl Popup {
         settings: AppSettings,
         focus: FocusHandle,
         search_focus: FocusHandle,
+        emoji_focus: FocusHandle,
+        kaomoji_focus: FocusHandle,
+        symbol_focus: FocusHandle,
+        initial_tab: Tab,
         cx: &mut Context<Self>,
     ) -> Self {
         let is_dark = resolve_dark(&settings);
         let items = backend.snapshot();
         let version = backend.version();
         let ui = load_ui_state();
+        let symbol_recents = crate::pickers::load_recent_symbols();
         // Initial keyboard focus is set by main.rs after the window opens.
         Self {
             backend,
             settings,
             is_dark,
             items,
-            tab: Tab::Clipboard,
+            tab: initial_tab,
             search: SearchState::new(search_focus),
             search_visible: false,
             focused: 0,
             compact: ui.compact,
             pinned_expanded: ui.pinned_expanded,
             focus,
+            emoji: PickerTabState::new(emoji_focus),
+            kaomoji: PickerTabState::new(kaomoji_focus),
+            symbol: PickerTabState::new(symbol_focus),
+            symbol_recents,
             last_version: version,
+        }
+    }
+
+    pub fn search_mut(&mut self, which: SearchWhich) -> &mut SearchState {
+        match which {
+            SearchWhich::Clipboard => &mut self.search,
+            SearchWhich::Emoji => &mut self.emoji.search,
+            SearchWhich::Kaomoji => &mut self.kaomoji.search,
+            SearchWhich::Symbol => &mut self.symbol.search,
+        }
+    }
+
+    fn picker_mut(&mut self, tab: Tab) -> Option<&mut PickerTabState> {
+        match tab {
+            Tab::Emoji => Some(&mut self.emoji),
+            Tab::Kaomoji => Some(&mut self.kaomoji),
+            Tab::Symbols => Some(&mut self.symbol),
+            Tab::Clipboard => None,
+        }
+    }
+
+    fn search_which(tab: Tab) -> SearchWhich {
+        match tab {
+            Tab::Clipboard => SearchWhich::Clipboard,
+            Tab::Emoji => SearchWhich::Emoji,
+            Tab::Kaomoji => SearchWhich::Kaomoji,
+            Tab::Symbols => SearchWhich::Symbol,
+        }
+    }
+
+    /// Reset per-picker grid focus when its filter changes (parity: index reset effects).
+    pub fn after_picker_filter_change(&mut self, which: SearchWhich) {
+        match which {
+            SearchWhich::Clipboard => self.after_filter_change(),
+            SearchWhich::Emoji => self.emoji.focused_main = 0,
+            SearchWhich::Kaomoji => self.kaomoji.focused_main = 0,
+            SearchWhich::Symbol => self.symbol.focused_main = 0,
         }
     }
 
@@ -136,6 +220,234 @@ impl Popup {
 
     pub fn open_smart_url(&self, url: &str) {
         let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+
+    // --- Picker flows (parity with `paste_text` command + picker hooks) ---
+
+    fn paste_picker_text(&mut self, text: &str, record_emoji: bool, cx: &mut Context<Self>) {
+        cx.hide();
+        let _ = focus_manager::restore_focused_window();
+        let _ = self.backend.paste_text(text, record_emoji);
+        cx.notify();
+    }
+
+    pub fn paste_emoji(&mut self, ch: &str, cx: &mut Context<Self>) {
+        self.paste_picker_text(ch, true, cx);
+    }
+
+    pub fn paste_kaomoji(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.paste_picker_text(text, false, cx);
+    }
+
+    pub fn paste_symbol(&mut self, symbol: &SymbolItem, cx: &mut Context<Self>) {
+        let ch = symbol.char.clone();
+        crate::pickers::record_symbol_usage(symbol);
+        self.symbol_recents = crate::pickers::load_recent_symbols();
+        self.paste_picker_text(&ch, false, cx);
+    }
+
+    pub fn emoji_filtered(&self) -> Vec<Emoji> {
+        let q = self.emoji.search.text.trim().to_string();
+        if !q.is_empty() {
+            return crate::pickers::search_emojis(&q, 100);
+        }
+        let all = crate::pickers::load_emojis();
+        if let Some(cat) = &self.emoji.category {
+            return all.into_iter().filter(|e| &e.category == cat).collect();
+        }
+        let recent = self.backend.recent_emojis();
+        if recent.is_empty() {
+            return all;
+        }
+        let map: std::collections::HashMap<&str, &Emoji> =
+            all.iter().map(|e| (e.char.as_str(), e)).collect();
+        let mut out: Vec<Emoji> = recent
+            .iter()
+            .filter_map(|r| map.get(r.char.as_str()).map(|e| (*e).clone()))
+            .collect();
+        let recent_chars: std::collections::HashSet<String> =
+            out.iter().map(|e| e.char.clone()).collect();
+        out.extend(all.into_iter().filter(|e| !recent_chars.contains(&e.char)));
+        out
+    }
+
+    pub fn kaomoji_filtered(&self) -> Vec<Kaomoji> {
+        let custom: Vec<Kaomoji> = self
+            .settings
+            .custom_kaomojis
+            .iter()
+            .enumerate()
+            .map(|(i, c)| Kaomoji {
+                id: format!("custom-{i}"),
+                text: c.text.clone(),
+                category: c.category.clone(),
+                keywords: c.keywords.clone(),
+            })
+            .collect();
+        crate::pickers::get_kaomojis(
+            self.kaomoji.category.as_deref(),
+            &self.kaomoji.search.text,
+            &custom,
+        )
+    }
+
+    pub fn symbol_filtered(&self) -> Vec<SymbolItem> {
+        crate::pickers::get_symbols(
+            self.symbol.category.as_deref(),
+            &self.symbol.search.text,
+        )
+    }
+
+    /// Grid navigation port of `useKeyboardNavigation` (pure index math).
+    pub fn grid_move(current: usize, key: &str, ctrl: bool, cols: usize, len: usize) -> Option<usize> {
+        if len == 0 {
+            return None;
+        }
+        let cols = cols.max(1);
+        match key {
+            "right" => current.checked_add(1).filter(|&n| n < len),
+            "left" => current.checked_sub(1),
+            "down" => {
+                let n = current + cols;
+                (n < len).then_some(n)
+            }
+            "up" => current.checked_sub(cols),
+            "home" => Some(if ctrl {
+                0
+            } else {
+                current / cols * cols
+            }),
+            "end" => Some(if ctrl {
+                len - 1
+            } else {
+                ((current / cols + 1) * cols).saturating_sub(1).min(len - 1)
+            }),
+            "pagedown" => Some((current + cols * 3).min(len - 1)),
+            "pageup" => Some(current.saturating_sub(cols * 3)),
+            _ => None,
+        }
+    }
+
+    fn search_ref(&self, which: SearchWhich) -> &SearchState {
+        match which {
+            SearchWhich::Clipboard => &self.search,
+            SearchWhich::Emoji => &self.emoji.search,
+            SearchWhich::Kaomoji => &self.kaomoji.search,
+            SearchWhich::Symbol => &self.symbol.search,
+        }
+    }
+
+    /// Picker-tab key routing: editor when focused, grid nav otherwise,
+    /// Ctrl+Left/Right to switch tabs (parity outcomes, see Phase 3 CONTEXT).
+    fn handle_picker_key(
+        &mut self,
+        tab: Tab,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+        let mods = &event.keystroke.modifiers;
+        let ctrl = mods.control && !mods.alt;
+        let which = Self::search_which(tab);
+
+        if ctrl && (key == "f" || key == "F") {
+            let h = self.search_ref(which).focus.clone();
+            h.focus(window);
+            cx.stop_propagation();
+            return;
+        }
+
+        if self.search_ref(which).focus.is_focused(window) {
+            if key == "enter" {
+                // Parity: Enter inside search does nothing.
+                cx.stop_propagation();
+                return;
+            }
+            let consumed = self.search_mut(which).handle_key(event);
+            if consumed {
+                self.after_picker_filter_change(which);
+                cx.notify();
+                cx.stop_propagation();
+            }
+            return;
+        }
+
+        if ctrl && (key == "left" || key == "right") {
+            self.tab = if key == "left" {
+                self.tab.prev()
+            } else {
+                self.tab.next()
+            };
+            self.focused = 0;
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+
+        match key {
+            "enter" | " " => {
+                self.paste_picker_at(tab, window, cx);
+                cx.stop_propagation();
+            }
+            "up" | "down" | "left" | "right" | "home" | "end" | "pagedown" | "pageup" => {
+                let cols = match tab {
+                    Tab::Kaomoji => super::pickers::kaomoji_columns(window),
+                    _ => super::pickers::grid_columns(window),
+                };
+                let len = match tab {
+                    Tab::Emoji => self.emoji_filtered().len(),
+                    Tab::Kaomoji => self.kaomoji_filtered().len(),
+                    Tab::Symbols => self.symbol_filtered().len(),
+                    Tab::Clipboard => 0,
+                };
+                let focused = self.picker_mut(tab).map(|p| p.focused_main).unwrap_or(0);
+                if let Some(n) = Self::grid_move(focused, key, ctrl, cols, len) {
+                    if let Some(p) = self.picker_mut(tab) {
+                        p.focused_main = n;
+                    }
+                    cx.notify();
+                }
+                cx.stop_propagation();
+            }
+            _ => {
+                if !mods.control && !mods.alt && !mods.platform && key.chars().count() == 1 {
+                    let h = self.search_ref(which).focus.clone();
+                    h.focus(window);
+                    let s = self.search_mut(which);
+                    s.text.push_str(key);
+                    s.cursor = s.text.len();
+                    self.after_picker_filter_change(which);
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            }
+        }
+    }
+
+    fn paste_picker_at(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
+        let _ = window;
+        match tab {
+            Tab::Emoji => {
+                let idx = self.emoji.focused_main;
+                if let Some(e) = self.emoji_filtered().get(idx).cloned() {
+                    self.paste_emoji(&e.char, cx);
+                }
+            }
+            Tab::Kaomoji => {
+                let idx = self.kaomoji.focused_main;
+                if let Some(k) = self.kaomoji_filtered().get(idx).cloned() {
+                    self.paste_kaomoji(&k.text, cx);
+                }
+            }
+            Tab::Symbols => {
+                let idx = self.symbol.focused_main;
+                if let Some(s) = self.symbol_filtered().get(idx).cloned() {
+                    self.paste_symbol(&s, cx);
+                }
+            }
+            Tab::Clipboard => {}
+        }
     }
 
     pub fn paste_item_by_id(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -229,12 +541,19 @@ impl Popup {
 
         // Escape closes search first, otherwise hides the popup (CORE-06).
         if key == "escape" {
-            if self.search_visible {
+            if self.tab == Tab::Clipboard && self.search_visible {
                 self.close_search(window, cx);
             } else {
                 cx.hide();
             }
             cx.stop_propagation();
+            return;
+        }
+
+        // Picker tabs: dedicated routing (grid nav owns the arrows here).
+        if self.tab != Tab::Clipboard {
+            let tab = self.tab;
+            self.handle_picker_key(tab, event, window, cx);
             return;
         }
 
@@ -390,19 +709,7 @@ impl Render for Popup {
 impl Popup {
     fn render_body(&self, window: &Window, cx: &mut Context<Popup>) -> gpui::AnyElement {
         if self.tab != Tab::Clipboard {
-            return div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(px(12.25))
-                .text_color(if self.is_dark {
-                    theme::dark::text_secondary()
-                } else {
-                    theme::light::text_secondary()
-                })
-                .child(format!("{} — coming in Phase 3", self.tab.label()))
-                .into_any_element();
+            return super::pickers::render_picker_tab(self, window, cx);
         }
         if self.items.is_empty() {
             return self.render_empty(cx).into_any_element();
