@@ -4,17 +4,14 @@
 
 A Windows 11-style clipboard history manager for Linux (Super+V popup, emoji/kaomoji/symbol pickers, settings + setup wizard). v0.7.1 ships as Rust + Tauri v2 + React + Tailwind. Milestone v0.8.0 builds a GPUI-Rust frontend in parallel with pixel-identical UI, reusing the existing Rust backend modules.
 
-## Current Milestone: v0.8.0 GPUI Frontend Port
+## Current Milestone: v0.8.0 GPUI Frontend Port — code complete (2026-09-08)
 
 **Goal:** Pindahkan frontend engine dari React/Tauri-Webview ke GPUI Rust murni dengan tampilan 1:1 identik, backend Rust dipakai ulang semaksimal mungkin.
 
-**Target features:**
-- Clipboard history UI di GPUI (teks / rich-text / image, pin, search, paste, clear/delete)
-- Picker di GPUI (emoji, kaomoji + custom, symbols) + tab bar + keyboard nav identik
-- Settings window + Setup Wizard di GPUI
-- Window behavior identik (frameless transparan, always-on-top, follow-mouse, fallback opaque)
-- System integration via backend reuse (shortcut Super+V, tray, autostart, theme, uinput paste)
-- Packaging reuse (deb/rpm/appimage + wrapper/udev/postinst yang ada)
+**Outcome:** All 5 phases code-complete + live-probed on GNOME Wayland. 6/30
+requirements Complete with proof; 24 In Progress pending human visual sign-off
+(`.planning/phases/05-system/HUMAN-CHECKLIST.md`) + X11-session verification.
+Next milestone: visual sign-off → polish gaps → bundles.
 
 ## Core Value
 
@@ -32,17 +29,20 @@ Super+V yang cepat dan cantik di Linux — popup riwayat clipboard ala Windows 1
 - ✓ Emoji / kaomoji (+ custom) / symbols picker — v0.7.1
 - ✓ Settings (theme, opacity, ui_scale, max_history, auto-delete) + Setup Wizard — v0.7.1
 - ✓ System/light/dark theme via XDG portal + NVIDIA/AppImage opaque fallback — v0.7.1
+- ✓ GPUI + Tauri run side by side without conflicts (distinct binary/app-id/config/socket) — v0.8.0
+- ✓ GPUI clipboard monitoring live on Wayland (probe: 1→2→3 items) — v0.8.0
+- ✓ GPUI autostart entry (own desktop file, hidden-start capable) — v0.8.0
+- ✓ uinput permission flow unchanged for GPUI (generic rule, rw verified) — v0.8.0
+- ✓ GPUI versioned binary/config paths never clash with Tauri — v0.8.0
 
 ### Active
 
-<!-- Milestone v0.8.0 scope. Hypotheses until shipped in GPUI. -->
+<!-- v0.8.0 code-complete; remaining = visual sign-off + polish gaps for next milestone. -->
 
-- [ ] GPUI app menampilkan clipboard history dengan paritas visual 1:1 vs React
-- [ ] GPUI picker (emoji/kaomoji/symbols) + tab bar + keyboard nav identik
-- [ ] GPUI settings + setup wizard dengan paritas perilaku
-- [ ] Window behavior identik (frameless, transparan, follow-mouse, always-on-top, fallback)
-- [ ] Integrasi sistem reuse backend (shortcut, tray, autostart, theme, paste)
-- [ ] Packaging Linux reuse untuk biner GPUI (deb/rpm/appimage)
+- [ ] Human pixel sign-off vs React (dark + light) — HUMAN-CHECKLIST.md
+- [ ] X11-session verification (hotkey grab, cursor-follow, NVIDIA blur)
+- [ ] Non-GNOME DE auto-registration, deb/rpm/AppImage bundles, release-LTO build
+- [ ] Polish gaps: settings Tab-order, grid virtualization, Fuse ranking, ui_scale zoom
 
 ### Out of Scope
 
@@ -58,6 +58,8 @@ Super+V yang cepat dan cantik di Linux — popup riwayat clipboard ala Windows 1
 - Window utama: frameless, transparent, skipTaskbar, alwaysOnTop, visible=false sampai dipanggil shortcut
 - GSD subagents (researcher/roadmapper) tidak tersedia saat milestone ini didefinisikan (billing habis) — research & roadmap dikerjakan inline oleh orchestrator
 - User dev machine + DE akan dikonfirmasi saat plan-phase (relevan untuk verifikasi blur/transparansi GPUI)
+- v0.8.0 outcome (2026-09-08): gpui-app ~9k lines, 36 tests green, all live probes
+  green on CachyOS/GNOME Wayland; Tauri build untouched and running throughout
 
 ## Constraints
 
@@ -71,14 +73,14 @@ Super+V yang cepat dan cantik di Linux — popup riwayat clipboard ala Windows 1
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Port ke GPUI Rust, React dibiarkan hidup (koeksistensi) | Stabilitas rilis + eksperimen paralel tanpa risiko | ✓ Locked Phase 1 |
-| Paritas penuh (clipboard + semua picker + settings + wizard) | Tanggung kalau setengah; definisi "sama persis" | — Pending |
-| Backend Rust dipakai ulang, bukan rewrite | Paste/shortcut/izin uinput rawan regresi | ✓ Locked Phase 1 |
+| Port ke GPUI Rust, React dibiarkan hidup (koeksistensi) | Stabilitas rilis + eksperimen paralel tanpa risiko | ✓ Good — proven side by side, Tauri undisturbed |
+| Paritas penuh (clipboard + semua picker + settings + wizard) | Tanggung kalau setengah; definisi "sama persis" | ✓ Code complete — visual sign-off pending human |
+| Backend Rust dipakai ulang, bukan rewrite | Paste/shortcut/izin uinput rawan regresi | ✓ Good — zero backend changes, live probes green |
 | Research + roadmap inline (tanpa subagents) | Billing subagent habis saat milestone dimulai | ✓ Done |
-| UI framework: upstream `gpui =0.2.2` (tolak fork adabraka-gpui) | 249k downloads vs ~1k; extras fork diduplikasi backend sendiri; contoh window_positioning membuktikan API PopUp transparan | ✓ Locked Phase 1 |
-| Tray: crate `tray-icon` (SNI); hotkey X11: `global-hotkey`, Wayland: reuse `linux_shortcut_manager` | Upstream GPUI tak punya tray/hotkey; pola app saat ini sudah terbukti di kedua display server | ✓ Locked Phase 1 |
-| Koeksistensi: biner `win11-clipboard-history-gpui`, app-id `...clipboard-history-gpui`, config `~/.config/win11-clipboard-history-gpui/` | Berbagi config/shortcut = konflik; satu pemegang Super+V + single-instance lock sendiri | ✓ Locked Phase 1 |
-| Pin `gpui =0.2.2` + commit Cargo.lock; isolasi API GPUI di `gpui-app/src/ui/` | Pre-1.0 churn; bump tak melebar | ✓ Locked Phase 1 |
+| UI framework: upstream `gpui =0.2.2` (tolak fork adabraka-gpui) | 249k downloads vs ~1k; extras fork diduplikasi backend sendiri; contoh window_positioning membuktikan API PopUp transparan | ✓ Good — full app built on it |
+| Tray: crate `tray-icon` (SNI); hotkey X11: `global-hotkey`, Wayland: DE shortcut → `--toggle` IPC | Upstream GPUI tak punya tray/hotkey; pola app saat ini sudah terbukti di kedua display server | ✓ Implemented — Wayland IPC + GNOME lifecycle proven live |
+| Koeksistensi: biner `win11-clipboard-history-gpui`, app-id `...clipboard-history-gpui`, config `~/.config/win11-clipboard-history-gpui/` | Berbagi config/shortcut = konflik; satu pemegang Super+V + single-instance lock sendiri | ✓ Good — proven live, Tauri paths never touched |
+| Pin `gpui =0.2.2` + commit Cargo.lock; isolasi API GPUI di `gpui-app/src/ui/` | Pre-1.0 churn; bump tak melebar | ✓ Done |
 
 ## Evolution
 
@@ -98,4 +100,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-09-08 after milestone v0.8.0 start*
+*Last updated: 2026-09-08 after milestone v0.8.0 code-complete*

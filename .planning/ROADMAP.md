@@ -10,7 +10,7 @@
 | 2 | Clipboard popup parity | Popup utama identik 1:1, history end-to-end | CORE-01–06, WIND-01–04 | 4 | ✓ code complete (visual sign-off → Phase 5) |
 | 3 | Pickers parity | Semua tab picker + data identik | PICK-01–05 | 3 | ✓ code complete (visual sign-off → Phase 5) |
 | 4 | Settings & setup wizard | Settings + wizard paritas perilaku | SET-01–05 | 2 | ✓ code complete (visual sign-off → Phase 5) |
-| 5 | System integration & packaging | Terinstal, terintegrasi, terverifikasi berdampingan | SYS-01–05, PKG-01–02 | 3 | ○ pending |
+| 5 | System integration & packaging | Terinstal, terintegrasi, terverifikasi berdampingan | SYS-01–05, PKG-01–02 | 3 | ✓ code complete (6 reqs Complete, visual/X11 → human) |
 
 ## Phase Details
 
