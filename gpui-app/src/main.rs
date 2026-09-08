@@ -13,8 +13,9 @@ use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use gpui::{
-    App, Application, AssetSource, Bounds, Context, SharedString, Size, WindowBounds,
-    WindowDecorations, WindowHandle, WindowKind, WindowOptions, point, prelude::*, px,
+    App, Application, AssetSource, Bounds, Context, Render, SharedString, Size, Window,
+    WindowBounds, WindowDecorations, WindowHandle, WindowKind, WindowOptions, div, point,
+    prelude::*, px,
 };
 
 mod app_state;
@@ -256,6 +257,34 @@ fn open_wizard_window(
     handle
 }
 
+struct HolderView;
+
+impl Render for HolderView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().size(px(1.))
+    }
+}
+
+/// Permanent 1×1 invisible window: keeps the platform run loop alive when the
+/// popup is closed (tray-only resident). Opened once, never closed.
+fn open_holder_window(cx: &mut App) {
+    let bounds = Bounds::new(point(px(0.), px(0.)), gpui::size(px(1.), px(1.)));
+    let _ = cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: None,
+            window_background: gpui::WindowBackgroundAppearance::Transparent,
+            show: true,
+            focus: false,
+            kind: WindowKind::PopUp,
+            is_movable: false,
+            app_id: Some(APP_ID.into()),
+            ..Default::default()
+        },
+        |_window, cx: &mut App| cx.new(|_| HolderView),
+    );
+}
+
 fn has_arg(args: &[String], flag: &str) -> bool {
     args.iter().any(|a| a == flag)
 }
@@ -279,6 +308,31 @@ fn main() {
                     eprintln!("[gpui-app] no running instance ({e})");
                     std::process::exit(1);
                 }
+            }
+        }
+    }
+    // Headless setup helpers (also used by packaging scripts).
+    if has_arg(&args, "--register-shortcuts") {
+        match gnome_shortcut::register() {
+            Ok(msg) => {
+                println!("{msg}");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("register failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if has_arg(&args, "--unregister-shortcuts") {
+        match gnome_shortcut::unregister() {
+            Ok(msg) => {
+                println!("{msg}");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("unregister failed: {e}");
+                std::process::exit(1);
             }
         }
     }
@@ -316,9 +370,29 @@ fn main() {
     }
     theme_watch::spawn_theme_watcher(sig_tx);
 
+    // GTK must initialize on the main thread before the AppIndicator tray backend.
+    let mut tray = match gtk::init() {
+        Ok(()) => {
+            let s = shared.lock().settings.clone();
+            match tray::Tray::build(s.enable_dynamic_tray_icon, settings::resolve_dark(&s)) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    eprintln!("[gpui-app] tray unavailable: {e}");
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("[gpui-app] GTK unavailable, running without tray: {e:?}");
+            None
+        }
+    };
+
     Application::new()
         .with_assets(GpuiAssets { base: assets_dir() })
         .run(move |cx: &mut App| {
+            // Resident holder first: the app must survive with zero visible windows.
+            open_holder_window(cx);
             let mut popup = if !want_setup && !background {
                 Some(open_popup_window(cx, &backend, &shared, scale, initial_tab))
             } else {
@@ -333,19 +407,6 @@ fn main() {
 
             // Poll loop: backend refresh + tray/menu/hotkey/IPC signals.
             // Tray + hotkeys live here (task-local): no cross-thread sharing.
-            let mut tray = {
-                let s = shared.lock().settings.clone();
-                match tray::Tray::build(
-                    s.enable_dynamic_tray_icon,
-                    settings::resolve_dark(&s),
-                ) {
-                    Ok(t) => Some(t),
-                    Err(e) => {
-                        eprintln!("[gpui-app] tray unavailable: {e}");
-                        None
-                    }
-                }
-            };
             let hotkeys = hotkey::register_hotkeys();
             let mut last_theme_dark: Option<bool> = None;
 

@@ -68,7 +68,11 @@ fn parse_path_list(raw: &str) -> Vec<String> {
 }
 
 fn custom_list() -> Result<Vec<String>, String> {
-    Ok(parse_path_list(&gsettings(&[MEDIA_KEYS, "custom-keybindings"])?))
+    Ok(parse_path_list(&gsettings(&[
+        "get",
+        MEDIA_KEYS,
+        "custom-keybindings",
+    ])?))
 }
 
 fn set_custom_list(paths: &[String]) -> Result<(), String> {

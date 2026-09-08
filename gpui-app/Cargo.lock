@@ -8876,6 +8876,7 @@ dependencies = [
  "futures-lite 2.6.1",
  "global-hotkey",
  "gpui",
+ "gtk",
  "image",
  "muda",
  "parking_lot",

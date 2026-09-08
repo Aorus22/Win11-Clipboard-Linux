@@ -34,6 +34,8 @@ regex = "1"
 parking_lot = "0.12"
 futures-lite = "2"
 tokio = { version = "1", features = ["full"] }
+# GTK init for the AppIndicator tray backend (same stack the Tauri build uses).
+gtk = "0.18"
 
 [profile.release]
 panic = "abort"
