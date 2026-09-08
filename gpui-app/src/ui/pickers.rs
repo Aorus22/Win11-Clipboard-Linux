@@ -457,7 +457,6 @@ where
     div()
         .flex()
         .flex_col()
-        .flex_wrap()
         .gap(px(4.))
         .children(rows)
         .into_any_element()
