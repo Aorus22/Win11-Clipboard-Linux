@@ -84,11 +84,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CORE-04 | Phase 2 | In Progress |
 | CORE-05 | Phase 2 | In Progress |
 | CORE-06 | Phase 2 | In Progress |
-| PICK-01 | Phase 3 | Pending |
-| PICK-02 | Phase 3 | Pending |
-| PICK-03 | Phase 3 | Pending |
-| PICK-04 | Phase 3 | Pending |
-| PICK-05 | Phase 3 | Pending |
+| PICK-01 | Phase 3 | In Progress |
+| PICK-02 | Phase 3 | In Progress |
+| PICK-03 | Phase 3 | In Progress |
+| PICK-04 | Phase 3 | In Progress |
+| PICK-05 | Phase 3 | In Progress |
 | SET-01 | Phase 4 | Pending |
 | SET-02 | Phase 4 | Pending |
 | SET-03 | Phase 4 | Pending |
