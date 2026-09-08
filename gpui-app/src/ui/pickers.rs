@@ -85,6 +85,8 @@ fn chrome(
         .children(sub.map(|s| div().px(px(12.)).pb(px(8.)).flex_shrink_0().child(s)))
         .child(
             div()
+                .flex()
+                .flex_col()
                 .flex_1()
                 .min_h(px(0.))
                 .overflow_hidden()
@@ -517,6 +519,8 @@ fn render_emoji_grid_virtual(
     let transparent = gpui::rgba(0x00000000);
     let scroll = state.emoji_scroll.clone();
     div()
+        .flex()
+        .flex_col()
         .flex_1()
         .min_h(px(0.))
         .overflow_hidden()
@@ -581,6 +585,8 @@ fn render_emoji_grid_virtual(
                 }
                 rows
             })
+            .flex_1()
+            .min_h(px(0.))
             .track_scroll(scroll),
         )
         .into_any_element()
@@ -602,6 +608,8 @@ fn render_symbol_grid_virtual(
     let transparent = gpui::rgba(0x00000000);
     let scroll = state.symbol_scroll.clone();
     div()
+        .flex()
+        .flex_col()
         .flex_1()
         .min_h(px(0.))
         .overflow_hidden()
@@ -668,6 +676,8 @@ fn render_symbol_grid_virtual(
                 }
                 rows
             })
+            .flex_1()
+            .min_h(px(0.))
             .track_scroll(scroll),
         )
         .into_any_element()
@@ -699,6 +709,8 @@ fn render_kaomoji_grid_virtual(
     let transparent = gpui::rgba(0x00000000);
     let scroll = state.kaomoji_scroll.clone();
     div()
+        .flex()
+        .flex_col()
         .flex_1()
         .min_h(px(0.))
         .overflow_hidden()
@@ -769,6 +781,8 @@ fn render_kaomoji_grid_virtual(
                 }
                 rows
             })
+            .flex_1()
+            .min_h(px(0.))
             .track_scroll(scroll),
         )
         .into_any_element()
