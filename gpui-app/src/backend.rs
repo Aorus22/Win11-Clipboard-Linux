@@ -14,6 +14,7 @@ use std::sync::{
 };
 use std::time::Duration;
 use win11_clipboard_history_lib::clipboard_manager::{self, ClipboardItem, ClipboardManager};
+use win11_clipboard_history_lib::emoji_manager::{EmojiManager, EmojiUsage};
 
 use crate::settings::{AppSettings, config_dir};
 
@@ -37,6 +38,7 @@ fn cleanup_interval_minutes(settings: &AppSettings) -> u64 {
 
 pub struct BackendService {
     manager: Mutex<ClipboardManager>,
+    emoji: Mutex<EmojiManager>,
     version: AtomicU64,
     max_history_size: usize,
     cleanup_minutes: u64,
@@ -44,11 +46,14 @@ pub struct BackendService {
 
 impl BackendService {
     pub fn new(settings: &AppSettings) -> Arc<Self> {
+        // Own data dir (SYS-06) — same file formats as the Tauri build.
+        let dir = config_dir();
         let service = Arc::new(Self {
             manager: Mutex::new(ClipboardManager::new(
-                history_path(),
+                dir.join("history.json"),
                 settings.max_history_size,
             )),
+            emoji: Mutex::new(EmojiManager::new(dir)),
             version: AtomicU64::new(1),
             max_history_size: settings.max_history_size,
             cleanup_minutes: cleanup_interval_minutes(settings),
@@ -96,6 +101,28 @@ impl BackendService {
         self.manager.lock().paste_item(item)?;
         self.bump();
         Ok(())
+    }
+
+    /// Mirror of the Tauri `paste_text` command (picker insertions): mark the
+    /// text so it doesn't re-enter history, write it, simulate Ctrl+V.
+    /// With `record_emoji`, also tracks emoji usage (parity with `itemType`).
+    pub fn paste_text(&self, text: &str, record_emoji: bool) -> Result<(), String> {
+        if record_emoji {
+            self.emoji.lock().record_usage(text);
+        }
+        {
+            let mut manager = self.manager.lock();
+            manager.mark_text_as_pasted(text);
+            manager.set_text_robust(text)?;
+        }
+        win11_clipboard_history_lib::input_simulator::simulate_paste_keystroke()
+            .map_err(|e| e.to_string())?;
+        self.bump();
+        Ok(())
+    }
+
+    pub fn recent_emojis(&self) -> Vec<EmojiUsage> {
+        self.emoji.lock().get_recent()
     }
 
     /// Mark pasted text so picker insertions don't re-enter history

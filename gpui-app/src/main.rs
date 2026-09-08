@@ -15,6 +15,7 @@ use gpui::{
 mod backend;
 mod geometry;
 mod history;
+mod pickers;
 mod settings;
 mod theme;
 mod ui;
