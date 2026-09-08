@@ -9,6 +9,12 @@ use gpui::{
     WindowBounds, WindowKind, WindowOptions, div, prelude::*, px, rgb, size,
 };
 
+mod backend;
+mod geometry;
+mod history;
+mod settings;
+mod theme;
+
 /// Separate app-id from the Tauri build so both can coexist (SYS-06).
 const APP_ID: &str = "dev.gustavosett.clipboard-history-gpui";
 

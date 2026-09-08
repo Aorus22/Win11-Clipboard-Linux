@@ -15,6 +15,17 @@ path = "src/main.rs"
 [dependencies]
 # Pinned: GPUI is pre-1.0 with frequent breaking changes (see .planning/research/SUMMARY.md).
 gpui = "=0.2.2"
+# Reused backend — same crate the Tauri app is built on (SYS-05). No src-tauri/ changes.
+win11-clipboard-history-lib = { path = "../src-tauri" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6.0"
+chrono = "0.4"
+base64 = "0.23"
+image = "0.25"
+x11rb = "0.14"
+regex = "1"
+parking_lot = "0.12"
 
 [profile.release]
 panic = "abort"
