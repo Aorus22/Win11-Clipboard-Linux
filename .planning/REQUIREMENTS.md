@@ -89,11 +89,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PICK-03 | Phase 3 | In Progress |
 | PICK-04 | Phase 3 | In Progress |
 | PICK-05 | Phase 3 | In Progress |
-| SET-01 | Phase 4 | Pending |
-| SET-02 | Phase 4 | Pending |
-| SET-03 | Phase 4 | Pending |
-| SET-04 | Phase 4 | Pending |
-| SET-05 | Phase 4 | Pending |
+| SET-01 | Phase 4 | In Progress |
+| SET-02 | Phase 4 | In Progress |
+| SET-03 | Phase 4 | In Progress |
+| SET-04 | Phase 4 | In Progress |
+| SET-05 | Phase 4 | In Progress |
 | WIND-01 | Phase 2 | In Progress |
 | WIND-02 | Phase 2 | In Progress |
 | WIND-03 | Phase 2 | In Progress |
