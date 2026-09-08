@@ -4,7 +4,7 @@ milestone_name: GPUI Frontend Port
 status: planning
 progress:
   phases_total: 5
-  phases_complete: 1
+  phases_complete: 2
   requirements_total: 30
   requirements_complete: 0
 ---
@@ -13,10 +13,10 @@ progress:
 
 ## Current Position
 
-Phase: 1 complete (foundation & coexistence) → next: Phase 2 clipboard popup parity
-Plan: `.planning/phases/01-foundation/01-PLAN.md` executed (T1–T4 all pass)
-Status: Phase 2 context gathering
-Last activity: 2026-09-08 — Phase 1 complete (gpui-app boots on GNOME Wayland, 12s smoke pass)
+Phase: 2 code complete (clipboard popup parity) → next: Phase 3 pickers parity
+Plan: `.planning/phases/02-popup-parity/02-PLAN.md` executed (T1–T4; live Wayland probe green)
+Status: Phase 3 context gathering
+Last activity: 2026-09-08 — Phase 2 code complete (visual sign-off deferred to Phase 5 human check)
 
 ## Project Reference
 
