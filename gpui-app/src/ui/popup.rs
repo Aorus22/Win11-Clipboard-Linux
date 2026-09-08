@@ -1038,7 +1038,8 @@ fn render_section_header(
 }
 
 /// Drag strip — port of `DragHandle.tsx`: centered pill + close button.
-/// Window dragging wires to the platform in T3 (best-effort).
+/// The whole strip starts a native window move (matches the Tauri drag region);
+/// the close button opts out so its click still lands.
 fn render_drag_strip(is_dark: bool, cx: &mut Context<Popup>) -> impl IntoElement {
     div()
         .id("drag-strip")
@@ -1049,6 +1050,20 @@ fn render_drag_strip(is_dark: bool, cx: &mut Context<Popup>) -> impl IntoElement
         .pt(px(16.))
         .pb(px(4.))
         .cursor_grab()
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(|_, event: &gpui::MouseDownEvent, window, _| {
+                // Close button owns the top-right corner (~28×44px at right-16
+                // top-8, plus margin): never start a move there, or the click
+                // is swallowed by the compositor grab.
+                let win_w = f32::from(window.bounds().size.width);
+                let x = f32::from(event.position.x);
+                let y = f32::from(event.position.y);
+                if !(x >= win_w - 48.0 && y <= 60.0) {
+                    window.start_window_move();
+                }
+            }),
+        )
         .child(
             div()
                 .id("drag-pill")
@@ -1060,13 +1075,7 @@ fn render_drag_strip(is_dark: bool, cx: &mut Context<Popup>) -> impl IntoElement
                     gpui::rgba(0xffffff33)
                 } else {
                     gpui::rgba(0x00000033)
-                })
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|_, _, window, _| {
-                        window.start_window_move();
-                    }),
-                ),
+                }),
         )
         .child(
             div()
@@ -1083,6 +1092,12 @@ fn render_drag_strip(is_dark: bool, cx: &mut Context<Popup>) -> impl IntoElement
                 } else {
                     gpui::rgba(0x00000080)
                 })
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|_, _, _, cx| {
+                        cx.stop_propagation();
+                    }),
+                )
                 .on_click(cx.listener(|_, _, window, _| {
                     window.remove_window();
                 }))
