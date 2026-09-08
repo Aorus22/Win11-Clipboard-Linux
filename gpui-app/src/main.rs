@@ -27,6 +27,8 @@ mod hotkey;
 mod instance;
 mod pickers;
 mod settings;
+#[cfg(test)]
+mod test_util;
 mod theme;
 mod theme_watch;
 mod tray;

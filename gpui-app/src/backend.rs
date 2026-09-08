@@ -215,6 +215,7 @@ mod tests {
 
     #[test]
     fn service_boots_with_own_history_path() {
+        let _serial = crate::test_util::serial_lock();
         let service = BackendService::new(&test_settings());
         assert!(history_path().ends_with("history.json"));
         assert!(history_path()
@@ -228,6 +229,7 @@ mod tests {
     /// (would inject Ctrl+V into whatever has focus).
     #[test]
     fn clipboard_write_round_trip() {
+        let _serial = crate::test_util::serial_lock();
         let service = BackendService::new(&test_settings());
         let probe = format!("gpui-test-probe-{}", std::process::id());
         {

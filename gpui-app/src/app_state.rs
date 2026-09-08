@@ -149,6 +149,7 @@ mod tests {
 
     #[test]
     fn save_bumps_version_and_persists() {
+        let _serial = crate::test_util::serial_lock();
         let backup = backup_settings();
         let backend = BackendService::new(&AppSettings::default());
         let shared = shared(AppSettings::default());
@@ -163,6 +164,7 @@ mod tests {
 
     #[test]
     fn first_run_marker_lifecycle() {
+        let _serial = crate::test_util::serial_lock();
         let path = first_run_path();
         let existed = path.exists();
         let _ = std::fs::remove_file(&path);
@@ -193,5 +195,43 @@ mod tests {
             .expect("path")
             .to_string_lossy()
             .contains("win11-clipboard-history-gpui.desktop"));
+    }
+
+    /// Live FS cycle against an isolated XDG_CONFIG_HOME (never the real one):
+    /// enable → entry exists with our exe → disable → gone.
+    #[test]
+    fn autostart_live_realfs_isolated() {
+        let _serial = crate::test_util::serial_lock();
+        let tmp = std::env::temp_dir().join(format!("gpui-xdg-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&tmp);
+        let prior = std::env::var("XDG_CONFIG_HOME").ok();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+
+        let result = (|| -> Result<(), String> {
+            assert!(!autostart_is_enabled());
+            autostart_enable()?;
+            assert!(autostart_is_enabled());
+            let path = autostart_path().ok_or("no path")?;
+            let content =
+                std::fs::read_to_string(&path).map_err(|e| format!("read: {e}"))?;
+            // In tests current_exe is the harness binary; assert it round-trips
+            // into Exec= and that no Tauri paths leak in.
+            let exe = std::env::current_exe()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            assert!(content.contains(&format!("Exec={exe}")), "Exec points at this binary");
+            assert!(!content.contains("win11-clipboard-history-bin"));
+            assert!(!content.contains("/usr/bin/win11-clipboard-history\""));
+            autostart_disable()?;
+            assert!(!autostart_is_enabled());
+            Ok(())
+        })();
+
+        match prior {
+            Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
+            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+        result.expect("autostart live cycle");
     }
 }

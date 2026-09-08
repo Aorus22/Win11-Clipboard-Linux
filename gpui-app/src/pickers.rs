@@ -355,6 +355,7 @@ mod tests {
 
     #[test]
     fn symbol_recents_lru_round_trip() {
+        let _serial = crate::test_util::serial_lock();
         // Uses the real config dir; restores prior content afterwards.
         let path = recent_symbols_path();
         let backup = std::fs::read_to_string(&path).ok();

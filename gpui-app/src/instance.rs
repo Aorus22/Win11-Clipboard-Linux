@@ -141,11 +141,17 @@ mod tests {
         assert_eq!(AppSignal::parse("bogus"), None);
     }
 
+    /// Socket lifecycle in ONE test: the GPUI_SOCK_PATH override is process-global,
+    /// so parallel #[test] fns would race on it. Runs sequentially by construction.
     #[test]
-    fn primary_receives_client_word() {
-        let path = temp_path("ipc");
-        let _ = std::fs::remove_file(&path);
-        unsafe { std::env::set_var("GPUI_SOCK_PATH", &path) };
+    fn socket_primary_notify_and_stale_reclaim() {
+        let _serial = crate::test_util::serial_lock();
+        let live = temp_path("ipc");
+        let stale = temp_path("stale");
+        let _ = std::fs::remove_file(&live);
+        let _ = std::fs::remove_file(&stale);
+
+        unsafe { std::env::set_var("GPUI_SOCK_PATH", &live) };
         let (tx, rx) = channel();
         assert!(matches!(acquire(tx), InstanceRole::Primary));
         send_signal(AppSignal::Toggle).expect("send");
@@ -153,24 +159,18 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("receive signal");
         assert_eq!(got, AppSignal::Toggle);
-        // A second acquire while primary lives reports Notified.
+        // A second acquire while the primary lives reports Notified.
         let (tx2, _rx2) = channel();
         assert!(matches!(acquire(tx2), InstanceRole::Notified));
-        unsafe { std::env::remove_var("GPUI_SOCK_PATH") };
-        let _ = std::fs::remove_file(&path);
-    }
 
-    #[test]
-    fn stale_socket_is_reclaimed() {
-        let path = temp_path("stale");
-        // Regular file (not a socket) blocks bind but refuses connects.
-        std::fs::write(&path, "stale").expect("write stale file");
-        unsafe { std::env::set_var("GPUI_SOCK_PATH", &path) };
-        let (tx, _rx) = channel();
-        // Bind fails oddly for regular files; either role is acceptable as long
-        // as no panic and no hang. Primary-with-reclaim is the goal.
-        let _ = acquire(tx);
+        // Stale regular file: acquire must not panic or hang.
+        std::fs::write(&stale, "stale").expect("write stale file");
+        unsafe { std::env::set_var("GPUI_SOCK_PATH", &stale) };
+        let (tx3, _rx3) = channel();
+        let _ = acquire(tx3);
+
         unsafe { std::env::remove_var("GPUI_SOCK_PATH") };
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&live);
+        let _ = std::fs::remove_file(&stale);
     }
 }
