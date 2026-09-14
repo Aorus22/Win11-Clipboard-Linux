@@ -276,9 +276,7 @@ impl SettingsState {
                     .map(|_| "Shortcuts registered successfully!".to_string()),
             );
         } else {
-            let exe = std::env::current_exe()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "win11-clipboard-history-gpui".to_string());
+            let exe = crate::app_state::launcher_path();
             self.shortcut_status = Some(Err(format!(
                 "Automatic registration supports GNOME. Bind Super+V to `{exe} --toggle` manually."
             )));

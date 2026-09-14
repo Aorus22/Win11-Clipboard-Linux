@@ -6,6 +6,7 @@
 //! - Autostart: OWN desktop entry (`win11-clipboard-history-gpui.desktop`) with the
 //!   GPUI binary path — the backend's entry hardcodes Tauri paths and must NOT be reused.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -78,10 +79,13 @@ pub fn reset_first_run() -> Result<(), String> {
 
 const AUTOSTART_FILE: &str = "win11-clipboard-history-gpui.desktop";
 
+/// `--background` keeps the login start tray-only: no popup window is mapped,
+/// so nothing shows up in the dock until the user toggles it (aligns autostart
+/// with how the app is meant to live — in the background).
 pub fn autostart_desktop_entry(exe_path: &str) -> String {
     format!(
         "[Desktop Entry]\nType=Application\nName=Win11 Clipboard History (GPUI)\n\
-         Exec={exe_path}\nHidden=false\nNoDisplay=false\n\
+         Exec={exe_path} --background\nHidden=false\nNoDisplay=false\n\
          X-GNOME-Autostart-enabled=true\n"
     )
 }
@@ -94,7 +98,28 @@ fn autostart_path() -> Option<std::path::PathBuf> {
     autostart_dir().map(|d| d.join(AUTOSTART_FILE))
 }
 
-fn current_exe_string() -> String {
+/// Path used for autostart entries and DE shortcuts.
+///
+/// Inside an AppImage `current_exe()` points at the transient mount
+/// (`/tmp/.mount_*/usr/bin/...`), which is gone after exit, so prefer the
+/// `$APPIMAGE` path the runtime exported.
+///
+/// That only holds when this process really lives inside that mount: a *parent*
+/// AppImage (VS Code, a terminal, any AppImage-packaged tool) exports the same
+/// variables, and blindly trusting them would register someone else's bundle in
+/// our autostart/shortcut entries.
+pub fn launcher_path() -> String {
+    if let (Some(appimage), Some(appdir)) = (
+        std::env::var_os("APPIMAGE").filter(|p| !p.is_empty()),
+        std::env::var_os("APPDIR").filter(|p| !p.is_empty()),
+    ) {
+        let inside_own_mount = std::env::current_exe()
+            .map(|exe| exe.starts_with(PathBuf::from(&appdir)))
+            .unwrap_or(false);
+        if inside_own_mount {
+            return PathBuf::from(appimage).display().to_string();
+        }
+    }
     std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "win11-clipboard-history-gpui".to_string())
@@ -106,9 +131,8 @@ pub fn autostart_enable() -> Result<(), String> {
     if !dir.exists() {
         std::fs::create_dir_all(&dir).map_err(|e| format!("create autostart dir: {e}"))?;
     }
-    // NOTE (Phase 5): hidden-at-login start lands with tray integration; until then
-    // the entry launches the popup visibly — same as a manual launch.
-    std::fs::write(&path, autostart_desktop_entry(&current_exe_string()))
+    // Tray + `--background` are in place, so the login start stays hidden.
+    std::fs::write(&path, autostart_desktop_entry(&launcher_path()))
         .map_err(|e| format!("write autostart entry: {e}"))?;
     Ok(())
 }

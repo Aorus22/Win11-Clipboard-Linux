@@ -79,13 +79,68 @@ impl AssetSource for GpuiAssets {
     }
 }
 
+/// Asset directory across the layouts we ship:
+/// 1. `$APPDIR/usr/share/...` — AppImage payload.
+/// 2. `<exe_dir>/../share/...` — installed PREFIX (AppImage `usr/bin` too).
+/// 3. `CARGO_MANIFEST_DIR/assets` — dev checkout (`cargo run`).
+/// 4. `/usr/share/...` — system install.
 fn assets_dir() -> PathBuf {
+    const ASSETS_SUFFIX: &str = "share/win11-clipboard-history-gpui/assets";
+    if let Some(appdir) = std::env::var_os("APPDIR").filter(|d| !d.is_empty()) {
+        let candidate = PathBuf::from(appdir).join("usr").join(ASSETS_SUFFIX);
+        if candidate.is_dir() {
+            return candidate;
+        }
+    }
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(PathBuf::from))
+    {
+        let candidate = dir.join("..").join(ASSETS_SUFFIX);
+        if candidate.is_dir() {
+            return candidate;
+        }
+    }
     let bundled = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
     if bundled.is_dir() {
         return bundled;
     }
-    // Installed layout (Phase 5 packaging).
-    PathBuf::from("/usr/share/win11-clipboard-history-gpui/assets")
+    PathBuf::from("/").join(ASSETS_SUFFIX)
+}
+
+/// Pin the display backend to X11/XWayland on Wayland sessions.
+///
+/// xdg-shell has no equivalent of `_NET_WM_WINDOW_TYPE_NOTIFICATION`, so a
+/// native-Wayland popup is an ordinary toplevel and GNOME lists it in
+/// Dash-to-Dock while it is open (the Tauri build hits the same wall:
+/// tauri-apps/tauri#9829). gpui's X11 backend tags `WindowKind::PopUp` as
+/// NOTIFICATION — hidden from docks/taskbars — and cursor-follow positioning
+/// for the popup comes back as well.
+///
+/// gpui resolves the backend with `guess_compositor()`, which prefers Wayland
+/// whenever `WAYLAND_DISPLAY` is non-empty, so drop it here — before the
+/// platform initializes. `XDG_SESSION_TYPE` is aligned at the same time so the
+/// shared backend's `session::is_wayland()` (cached on first use) matches the
+/// backend actually in use and takes the X11 focus/positioning paths.
+///
+/// Opt out with `WIN11_CLIPBOARD_ALLOW_WAYLAND=1`.
+fn pin_display_backend_to_x11() {
+    if std::env::var_os("WIN11_CLIPBOARD_ALLOW_WAYLAND").is_some() {
+        return;
+    }
+    if !std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty()) {
+        return; // Already X11, or not a Wayland session at all.
+    }
+    // Without XWayland there is nothing to fall back to — stay on Wayland
+    // rather than starting headless.
+    if !std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty()) {
+        eprintln!("[gpui-app] no DISPLAY (XWayland) available; keeping the Wayland backend");
+        return;
+    }
+    std::env::remove_var("WAYLAND_DISPLAY");
+    std::env::remove_var("WAYLAND_SOCKET");
+    std::env::set_var("XDG_SESSION_TYPE", "x11");
+    eprintln!("[gpui-app] X11/XWayland backend pinned (popup stays out of the dock)");
 }
 
 /// Initial popup origin: cursor-follow on X11, bottom-center on Wayland —
@@ -294,6 +349,10 @@ fn has_arg(args: &[String], flag: &str) -> bool {
 }
 
 fn main() {
+    // Must run before the platform is initialized (and before anything caches
+    // the session type) so the whole process agrees on the X11 backend.
+    pin_display_backend_to_x11();
+
     let args: Vec<String> = std::env::args().collect();
     if has_arg(&args, "--version") || has_arg(&args, "-v") {
         println!("win11-clipboard-history-gpui {}", env!("CARGO_PKG_VERSION"));

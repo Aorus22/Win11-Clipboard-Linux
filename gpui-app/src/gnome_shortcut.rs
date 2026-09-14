@@ -31,11 +31,10 @@ fn gsettings(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Resolves through `app_state::launcher_path()` so an AppImage registers the
+/// AppImage file, not the transient mount path `current_exe()` reports there.
 fn current_exe_toggle() -> String {
-    let exe = std::env::current_exe()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "win11-clipboard-history-gpui".to_string());
-    format!("{exe} --toggle")
+    format!("{} --toggle", crate::app_state::launcher_path())
 }
 
 pub fn is_gnome() -> bool {
@@ -97,8 +96,12 @@ fn entry_set(path: &str, key: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Our entries are recognised by the binary name in the command — plus the
+/// exact launcher path, so a renamed AppImage still matches its own bindings.
 fn is_ours(path: &str) -> bool {
-    entry_get(path, "command").contains("win11-clipboard-history-gpui")
+    let command = entry_get(path, "command");
+    command.contains("win11-clipboard-history-gpui")
+        || command.contains(&crate::app_state::launcher_path())
 }
 
 /// Register both shortcuts. Idempotent: reuses our own entries, never touches

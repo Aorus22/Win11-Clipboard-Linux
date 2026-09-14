@@ -22,12 +22,10 @@ use win11_clipboard_history_lib::{
     shortcut_setup,
 };
 
-/// Command shown/copied for manual shortcut setup — always THIS binary.
+/// Command shown/copied for manual shortcut setup — always THIS binary
+/// (AppImage-aware: resolves to the AppImage file, not its mount path).
 fn toggle_command() -> String {
-    let exe = std::env::current_exe()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "win11-clipboard-history-gpui".to_string());
-    format!("{exe} --toggle")
+    format!("{} --toggle", crate::app_state::launcher_path())
 }
 
 pub struct WizardState {

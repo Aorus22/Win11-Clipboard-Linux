@@ -6,6 +6,8 @@ target/
 dist/
 # ...except the GPUI packaging templates (desktop entry source)
 !gpui-app/dist/
+# ...and never the built AppImage bundles themselves
+gpui-app/dist/*.AppImage
 src-tauri/target/
 
 # IDE

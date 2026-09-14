@@ -36,7 +36,8 @@ RESET := \033[0m
 
 .PHONY: all help deps deps-ubuntu deps-debian deps-fedora deps-arch \
         rust node check-deps dev build install uninstall clean clean-first-run run \
-        lint format test release gpui-build gpui-install gpui-uninstall
+        lint format test release gpui-build gpui-install gpui-uninstall \
+        gpui-appimage gpui-appimage-install
 
 all: build
 
@@ -123,6 +124,7 @@ deps-ubuntu deps-debian:
 		libayatana-appindicator3-dev \
 		librsvg2-dev \
 		libxdo-dev \
+		libxkbcommon-x11-dev \
 		libgtk-3-dev \
 		libglib2.0-dev \
 		xclip \
@@ -141,6 +143,7 @@ deps-fedora:
 		libayatana-appindicator-gtk3-devel \
 		librsvg2-devel \
 		libxdo-devel \
+		libxkbcommon-x11-devel \
 		gtk3-devel \
 		glib2-devel \
 		xclip \
@@ -394,6 +397,19 @@ gpui-install: gpui-build
 	@gtk-update-icon-cache -f -t $(DESTDIR)$(DATADIR)/icons/hicolor 2>/dev/null || true
 	@echo -e "$(GREEN)✓ Installed! The GPUI build coexists with the Tauri app.$(RESET)"
 	@echo "Run '$(GPUI_BIN)' once to complete the first-run wizard."
+
+# Portable single-file bundle for the GPUI frontend (linuxdeploy + appimagetool,
+# both fetched on demand and run without FUSE). No sudo needed.
+gpui-appimage:
+	@echo -e "$(CYAN)Building GPUI AppImage...$(RESET)"
+	@./scripts/build-gpui-appimage.sh
+	@echo -e "$(GREEN)✓ AppImage written to gpui-app/dist/$(RESET)"
+
+# Build the AppImage and register it for the current user only:
+# ~/.local/bin + ~/.local/share/applications entry. Never touches /usr.
+gpui-appimage-install:
+	@echo -e "$(CYAN)Building + installing GPUI AppImage for $(shell whoami)...$(RESET)"
+	@./scripts/build-gpui-appimage.sh --install
 
 # Remove only GPUI-owned files. The udev rule stays (shared with Tauri build).
 gpui-uninstall:
