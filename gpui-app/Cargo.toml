@@ -16,8 +16,8 @@ path = "src/main.rs"
 # Pinned: GPUI is pre-1.0 with frequent breaking changes (see .planning/research/SUMMARY.md).
 gpui = "=0.2.2"
 anyhow = "1"
-# Reused backend — same crate the Tauri app is built on (SYS-05). No src-tauri/ changes.
-win11-clipboard-history-lib = { path = "../src-tauri" }
+# Reused core backend — shared with Tauri app, completely decoupled from Tauri UI
+win11-clipboard-history-lib = { package = "win11-clipboard-core", path = "../core" }
 # System integration (Phase 5): tray, global hotkeys, portal theme listener.
 tray-icon = "0.24"
 muda = "0.19"

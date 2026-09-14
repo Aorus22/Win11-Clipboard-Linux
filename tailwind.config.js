@@ -2,7 +2,7 @@
 export default {
   content: [
     "./index.html",
-    "./src/**/*.{js,ts,jsx,tsx}",
+    "./web/**/*.{js,ts,jsx,tsx}",
   ],
   darkMode: 'class', // Using class strategy with useDarkMode hook that syncs with system preference
   theme: {

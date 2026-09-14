@@ -11,19 +11,20 @@ use tauri::{
     AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, State, WebviewWindow,
     WindowEvent,
 };
-use win11_clipboard_history_lib::autostart_manager;
-use win11_clipboard_history_lib::clipboard_manager::{ClipboardItem, ClipboardManager};
-use win11_clipboard_history_lib::config_manager::{resolve_window_position, ConfigManager};
-use win11_clipboard_history_lib::emoji_manager::{EmojiManager, EmojiUsage};
-use win11_clipboard_history_lib::focus_manager::x11_robust_activate;
-use win11_clipboard_history_lib::focus_manager::{restore_focused_window, save_focused_window};
-use win11_clipboard_history_lib::input_simulator::simulate_paste_keystroke;
-use win11_clipboard_history_lib::permission_checker;
-use win11_clipboard_history_lib::rendering_env;
-use win11_clipboard_history_lib::session::is_wayland;
-use win11_clipboard_history_lib::shortcut_setup;
-use win11_clipboard_history_lib::theme_manager::{self, ThemeInfo};
-use win11_clipboard_history_lib::user_settings::{UserSettings, UserSettingsManager};
+mod commands;
+mod config_manager;
+mod theme_manager;
+
+use commands::{autostart_manager, permission_checker, rendering_env, shortcut_setup};
+use config_manager::{resolve_window_position, ConfigManager};
+use theme_manager::ThemeInfo;
+use win11_clipboard_core::clipboard_manager::{ClipboardItem, ClipboardManager};
+use win11_clipboard_core::emoji_manager::{EmojiManager, EmojiUsage};
+use win11_clipboard_core::focus_manager::x11_robust_activate;
+use win11_clipboard_core::focus_manager::{restore_focused_window, save_focused_window};
+use win11_clipboard_core::input_simulator::simulate_paste_keystroke;
+use win11_clipboard_core::session::is_wayland;
+use win11_clipboard_core::user_settings::{UserSettings, UserSettingsManager};
 
 /// Global flag to track if we started in background mode
 /// This is used to block the initial window show
@@ -234,7 +235,7 @@ async fn paste_gif_from_url(
     // 1. Download (Blocking) - Window stays open to show loading if UI supports it
     let url_clone = url.clone();
     let file_uri = tokio::task::spawn_blocking(move || {
-        win11_clipboard_history_lib::gif_manager::paste_gif_to_clipboard_with_uri(&url_clone)
+        win11_clipboard_core::gif_manager::paste_gif_to_clipboard_with_uri(&url_clone)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -283,7 +284,7 @@ async fn copy_text_to_clipboard(_state: State<'_, AppState>, text: String) -> Re
 #[tauri::command]
 async fn finish_setup(app: AppHandle) -> Result<(), String> {
     // 1. Mark first run as complete (redundant but safe)
-    win11_clipboard_history_lib::permission_checker::mark_first_run_complete()
+    permission_checker::mark_first_run_complete()
         .map_err(|e| e.to_string())?;
 
     // 2. Close setup window
@@ -721,7 +722,7 @@ fn start_clipboard_watcher(app: AppHandle, clipboard_manager: Arc<Mutex<Clipboar
             if let Ok(text) = manager.get_current_text() {
                 if !text.is_empty() {
                     let text_hash =
-                        win11_clipboard_history_lib::clipboard_manager::calculate_hash(&text);
+                        win11_clipboard_core::clipboard_manager::calculate_hash(&text);
 
                     if Some(text_hash) != last_text_hash {
                         last_text_hash = Some(text_hash);
@@ -806,7 +807,7 @@ fn main() {
     let start_in_background_clone = start_in_background;
     let open_emoji_on_start_clone = open_emoji_on_start;
 
-    win11_clipboard_history_lib::session::init();
+    win11_clipboard_core::session::init();
 
     let is_mouse_inside = Arc::new(AtomicBool::new(false));
     let base_dir = dirs::data_local_dir()
@@ -867,7 +868,7 @@ fn main() {
                     // Check if setup was effectively finished.
                     // If the user clicked "Start Using", `finish_setup` would have been called.
                     // `finish_setup` calls `mark_first_run_complete`.
-                    if win11_clipboard_history_lib::permission_checker::is_first_run() {
+                    if permission_checker::is_first_run() {
                          println!("[Setup] Setup window closed without completion. Exiting app.");
                          window.app_handle().exit(0);
                     }
@@ -881,8 +882,8 @@ fn main() {
             // single-instance plugin has rejected shortcut helper processes.
             // Starting it earlier would hotplug a temporary keyboard every
             // time the desktop launches the shortcut command.
-            win11_clipboard_history_lib::input_simulator::init();
-            win11_clipboard_history_lib::paste_sync::init();
+            win11_clipboard_core::input_simulator::init();
+            win11_clipboard_core::paste_sync::init();
 
             // FIRST THING: If started in background mode, immediately hide the main window
             // This runs before anything else to prevent the window from appearing

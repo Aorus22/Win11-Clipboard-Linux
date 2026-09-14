@@ -177,7 +177,7 @@ pub const KAOMOJI_CATEGORIES: &[&str] = &[
 fn static_kaomojis() -> &'static Vec<Kaomoji> {
     static LIST: OnceLock<Vec<Kaomoji>> = OnceLock::new();
     LIST.get_or_init(|| {
-        serde_json::from_str(include_str!("../../src/data/kaomojis.json"))
+        serde_json::from_str(include_str!("../../web/data/kaomojis.json"))
             .expect("kaomojis.json parses")
     })
 }
@@ -233,7 +233,7 @@ pub const SYMBOL_CATEGORIES: &[&str] = &[
 fn all_symbols() -> &'static Vec<SymbolItem> {
     static LIST: OnceLock<Vec<SymbolItem>> = OnceLock::new();
     LIST.get_or_init(|| {
-        serde_json::from_str(include_str!("../../src/data/symbols.json"))
+        serde_json::from_str(include_str!("../../web/data/symbols.json"))
             .expect("symbols.json parses")
     })
 }

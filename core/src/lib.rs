@@ -1,5 +1,7 @@
-//! Windows 11 Clipboard History For Linux Library
-//! This module re-exports the core functionality for use as a library
+//! Windows 11 Clipboard History Core Library
+//! This crate contains the shared backend logic (clipboard, input simulation,
+//! focus management, shortcuts, settings, sessions, permissions, etc.)
+//! completely independent of any UI framework.
 
 pub mod autostart_manager;
 pub mod clipboard_manager;
@@ -8,6 +10,7 @@ pub mod emoji_manager;
 pub mod focus_manager;
 pub mod gif_manager;
 pub mod input_simulator;
+pub mod linux_shortcut_manager;
 pub mod paste_sync;
 pub mod permission_checker;
 pub mod rendering_env;
@@ -17,13 +20,10 @@ pub mod shortcut_setup;
 pub mod theme_manager;
 pub mod user_settings;
 
-pub mod linux_shortcut_manager;
-
 pub use clipboard_manager::{ClipboardContent, ClipboardItem, ClipboardManager};
 pub use config_manager::ConfigManager;
 pub use emoji_manager::{EmojiManager, EmojiUsage};
 pub use focus_manager::{restore_focused_window, save_focused_window};
-
 pub use focus_manager::{x11_activate_window_by_title, x11_robust_activate};
 pub use gif_manager::{paste_gif_to_clipboard, paste_gif_to_clipboard_with_uri};
 pub use permission_checker::{

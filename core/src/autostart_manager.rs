@@ -60,7 +60,6 @@ fn get_exec_path() -> String {
 }
 
 /// Enable autostart by creating a .desktop file in ~/.config/autostart/
-#[tauri::command]
 pub fn autostart_enable() -> Result<(), String> {
     let autostart_dir = get_autostart_dir().ok_or("Could not determine config directory")?;
     let autostart_file = get_autostart_file().ok_or("Could not determine autostart file path")?;
@@ -91,7 +90,6 @@ pub fn autostart_enable() -> Result<(), String> {
 }
 
 /// Disable autostart by removing the .desktop file
-#[tauri::command]
 pub fn autostart_disable() -> Result<(), String> {
     let autostart_file = get_autostart_file().ok_or("Could not determine autostart file path")?;
 
@@ -105,7 +103,6 @@ pub fn autostart_disable() -> Result<(), String> {
 }
 
 /// Check if autostart is enabled
-#[tauri::command]
 pub fn autostart_is_enabled() -> Result<bool, String> {
     let autostart_file = get_autostart_file().ok_or("Could not determine autostart file path")?;
 
@@ -127,7 +124,6 @@ pub fn autostart_is_enabled() -> Result<bool, String> {
 /// Migrate from the old tauri-plugin-autostart entry to the new custom one
 /// This fixes existing installations where the autostart points to the wrong binary
 /// or is missing the startup delay for proper tray initialization
-#[tauri::command]
 pub fn autostart_migrate() -> Result<bool, String> {
     let autostart_file = get_autostart_file().ok_or("Could not determine autostart file path")?;
 

@@ -8,7 +8,6 @@ use crate::shortcut_conflict_detector::{
 };
 
 /// Get the current desktop environment name
-#[tauri::command]
 pub fn get_desktop_environment() -> String {
     let xdg_current = env::var("XDG_CURRENT_DESKTOP")
         .unwrap_or_default()
@@ -72,20 +71,17 @@ fn is_process_running(name: &str) -> bool {
 }
 
 /// Detect shortcut conflicts for Super+V
-#[tauri::command]
 pub fn detect_conflicts() -> ConflictDetectionResult {
     detect_shortcut_conflicts()
 }
 
 /// Automatically resolve detected conflicts
-#[tauri::command]
 pub fn resolve_conflicts() -> Result<Vec<String>, String> {
     auto_resolve_conflicts()
 }
 
 /// Register the global shortcut with the desktop environment
 /// This calls the existing linux_shortcut_manager
-#[tauri::command]
 pub fn register_de_shortcut() -> Result<String, String> {
     {
         // Run in a separate thread but wait for completion to avoid race conditions
@@ -105,7 +101,6 @@ pub fn register_de_shortcut() -> Result<String, String> {
 }
 
 /// Check if the DE shortcut manager has the tools needed
-#[tauri::command]
 pub fn check_shortcut_tools() -> ShortcutToolsStatus {
     {
         let gsettings = command_exists("gsettings");

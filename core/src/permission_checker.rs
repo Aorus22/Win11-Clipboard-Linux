@@ -28,7 +28,6 @@ fn get_config_path() -> PathBuf {
 }
 
 /// Verify if the user has access to /dev/uinput
-#[tauri::command]
 pub fn check_permissions() -> PermissionStatus {
     let uinput_path = "/dev/uinput";
 
@@ -67,7 +66,6 @@ fn command_exists(cmd: &str) -> bool {
 }
 
 /// Apply ACL for immediate access (requires pkexec/sudo)
-#[tauri::command]
 pub fn fix_permissions_now() -> Result<String, String> {
     // Check required commands exist
     if !command_exists("pkexec") {
@@ -98,13 +96,11 @@ pub fn fix_permissions_now() -> Result<String, String> {
 }
 
 /// Check if this is the first run of the application
-#[tauri::command]
 pub fn is_first_run() -> bool {
     !get_config_path().exists()
 }
 
 /// Mark the first run as complete
-#[tauri::command]
 pub fn mark_first_run_complete() -> Result<(), String> {
     let config_path = get_config_path();
 
@@ -127,7 +123,6 @@ pub fn mark_first_run_complete() -> Result<(), String> {
 }
 
 /// Reset the first run state - will show the setup wizard again
-#[tauri::command]
 pub fn reset_first_run() -> Result<(), String> {
     let config_path = get_config_path();
 

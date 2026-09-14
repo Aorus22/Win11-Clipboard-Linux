@@ -40,4 +40,7 @@ src-tauri/WixTools/
 src-tauri/Cargo.lock
 src-tauri/gen/
 
+# Core
+core/Cargo.lock
+
 temp/*

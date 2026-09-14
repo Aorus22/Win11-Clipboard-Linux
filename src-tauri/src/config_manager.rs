@@ -1,166 +1,37 @@
-//! Config Manager Module
-//! Handles persistence of window state (position, monitor) specifically for Wayland usage.
+//! Config Manager Adapter for Tauri
+//! Provides window positioning resolution using Tauri's Monitor and PhysicalPosition types,
+//! while delegating storage and core calculation to win11-clipboard-core.
 
-use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::PathBuf;
+pub use win11_clipboard_core::config_manager::{ConfigManager, WindowState};
 use tauri::{Monitor, PhysicalPosition, PhysicalSize};
-
-const CONFIG_FILE: &str = "window_state.json";
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WindowState {
-    pub monitor_name: Option<String>,
-    pub x: i32,
-    pub y: i32,
-}
-
-pub struct ConfigManager {
-    data_dir: PathBuf,
-    state: WindowState,
-    dirty: bool, // Tracks if we have unsaved changes in memory
-}
-
-impl ConfigManager {
-    pub fn new(data_dir: PathBuf) -> Self {
-        let mut manager = Self {
-            data_dir,
-            state: WindowState::default(),
-            dirty: false,
-        };
-
-        if let Err(e) = manager.load() {
-            eprintln!(
-                "[ConfigManager] Warning: Failed to load config: {}. Defaulting to empty state.",
-                e
-            );
-        }
-
-        manager
-    }
-
-    pub fn get_state(&self) -> WindowState {
-        self.state.clone()
-    }
-
-    /// Updates the state in memory only. Use sync_to_disk() to flush.
-    pub fn update_state(&mut self, monitor_name: Option<String>, x: i32, y: i32) {
-        self.state.monitor_name = monitor_name;
-        self.state.x = x;
-        self.state.y = y;
-        self.dirty = true;
-    }
-
-    /// Flushes changes to disk only if there are unsaved changes.
-    pub fn sync_to_disk(&mut self) {
-        if self.dirty {
-            if let Err(e) = self.save_to_disk() {
-                eprintln!("[ConfigManager] Failed to save config: {}", e);
-            } else {
-                self.dirty = false;
-            }
-        }
-    }
-
-    // --- IO ---
-
-    fn config_path(&self) -> PathBuf {
-        self.data_dir.join(CONFIG_FILE)
-    }
-
-    fn load(&mut self) -> Result<(), String> {
-        let path = self.config_path();
-        if !path.exists() {
-            return Ok(());
-        }
-        let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
-        self.state = serde_json::from_str(&content).map_err(|e| e.to_string())?;
-        Ok(())
-    }
-
-    fn save_to_disk(&self) -> Result<(), String> {
-        if !self.data_dir.exists() {
-            fs::create_dir_all(&self.data_dir).map_err(|e| e.to_string())?;
-        }
-        let content = serde_json::to_string_pretty(&self.state).map_err(|e| e.to_string())?;
-        fs::write(self.config_path(), content).map_err(|e| e.to_string())?;
-        Ok(())
-    }
-}
 
 /// Determines where the window should be placed based on saved state and available monitors.
 pub fn resolve_window_position(
-    _state: &WindowState,
+    state: &WindowState,
     available_monitors: &[Monitor],
     window_size: PhysicalSize<u32>,
 ) -> PhysicalPosition<i32> {
-    // 1. Try to restore saved position if monitor exists and position is valid
-    /*
-    if let Some(saved_monitor_name) = &state.monitor_name {
-        if let Some(monitor) = available_monitors.iter().find(|m| {
-            m.name()
-                .is_some_and(|n| n.as_str() == saved_monitor_name.as_str())
-        }) {
-            if is_position_valid(state.x, state.y, monitor, window_size) {
-                return PhysicalPosition::new(state.x, state.y);
-            }
-        }
-    }
-    */
-
-    // 2. Fallback: Default to Bottom-Center of Primary (or first available)
-    let target_monitor = available_monitors
+    let bounds: Vec<win11_clipboard_core::config_manager::MonitorBounds> = available_monitors
         .iter()
-        .find(|m| m.scale_factor() > 0.0) // Just a check to get first valid one
-        .unwrap_or(&available_monitors[0]);
+        .map(|m| win11_clipboard_core::config_manager::MonitorBounds {
+            name: m.name().map(|s| s.to_string()),
+            position: win11_clipboard_core::config_manager::Position {
+                x: m.position().x,
+                y: m.position().y,
+            },
+            size: win11_clipboard_core::config_manager::Size {
+                width: m.size().width,
+                height: m.size().height,
+            },
+            scale_factor: m.scale_factor(),
+        })
+        .collect();
 
-    calculate_bottom_center(target_monitor, window_size)
-}
+    let size = win11_clipboard_core::config_manager::Size {
+        width: window_size.width,
+        height: window_size.height,
+    };
 
-/// Checks if a coordinate is "valid" based on bounds and visibility heuristics.
-#[allow(dead_code)]
-fn is_position_valid(x: i32, y: i32, monitor: &Monitor, window_size: PhysicalSize<u32>) -> bool {
-    is_top_left_within_monitor(x, y, monitor)
-        && has_min_vertical_visibility(y, monitor, window_size)
-}
-
-/// Ensures the window's top-left corner is strictly inside the monitor bounds.
-#[allow(dead_code)]
-fn is_top_left_within_monitor(x: i32, y: i32, monitor: &Monitor) -> bool {
-    let m_pos = monitor.position();
-    let m_size = monitor.size();
-
-    x >= m_pos.x
-        && x < (m_pos.x + m_size.width as i32)
-        && y >= m_pos.y
-        && y < (m_pos.y + m_size.height as i32)
-}
-
-/// Ensures at least the top half of the window remains visible on the monitor.
-#[allow(dead_code)]
-fn has_min_vertical_visibility(y: i32, monitor: &Monitor, window_size: PhysicalSize<u32>) -> bool {
-    let m_pos = monitor.position();
-    let m_size = monitor.size();
-    // Ensure y is not so low that the window falls off the bottom entirely.
-    // We require the top half (height/2) to be above the bottom edge of the monitor.
-    y < (m_pos.y + m_size.height as i32 - (window_size.height as i32 / 2))
-}
-
-/// Calculates a centered position at the bottom of the screen.
-fn calculate_bottom_center(
-    monitor: &Monitor,
-    window_size: PhysicalSize<u32>,
-) -> PhysicalPosition<i32> {
-    const PADDING_BOTTOM: i32 = 45;
-
-    let m_pos = monitor.position();
-    let m_size = monitor.size();
-
-    // X = center horizontally
-    let x = m_pos.x + (m_size.width as i32 / 2) - (window_size.width as i32 / 2);
-
-    // Y = bottom - window height - padding
-    let y = m_pos.y + m_size.height as i32 - window_size.height as i32 - PADDING_BOTTOM;
-
-    PhysicalPosition::new(x, y)
+    let pos = win11_clipboard_core::config_manager::resolve_window_position(state, &bounds, size);
+    PhysicalPosition::new(pos.x, pos.y)
 }

@@ -152,7 +152,6 @@ pub fn get_rendering_env() -> &'static RenderingEnv {
 }
 
 /// Tauri command – returns the rendering environment to the frontend.
-#[tauri::command]
 pub fn get_rendering_environment() -> RenderingEnv {
     get_rendering_env().clone()
 }
