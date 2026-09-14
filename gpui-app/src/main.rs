@@ -253,7 +253,13 @@ fn open_popup_window(
         })
         .expect("failed to open GPUI popup window");
     let _ = handle.update(cx, |popup, window, cx| {
+        // gpui's X11 backend ignores `WindowOptions.focus`, so ask the window
+        // manager directly: an unfocused popup receives no keystrokes (search
+        // text, arrows, Enter) and never reports losing focus, so clicking
+        // outside would leave it up.
+        window.activate_window();
         popup.focus.focus(window);
+        popup.watch_activation(window, cx);
         cx.notify();
     });
     handle
@@ -505,11 +511,19 @@ fn main() {
                     for signal in signals {
                         match signal {
                             AppSignal::Toggle => {
-                                if let Some(h) = popup.take() {
-                                    let _ = h.update(cx, |_, window, _| {
-                                        window.remove_window();
-                                    });
-                                } else {
+                                // `update` fails when the window already went
+                                // away — the popup dismisses itself on focus
+                                // loss — and then the toggle must reopen, not be
+                                // swallowed by the stale handle.
+                                let closed = match popup.take() {
+                                    Some(h) => h
+                                        .update(cx, |_, window, _| {
+                                            window.remove_window();
+                                        })
+                                        .is_ok(),
+                                    None => false,
+                                };
+                                if !closed {
                                     let st = shared.lock().settings.clone();
                                     match cx.update(|cx| {
                                         open_popup_window(

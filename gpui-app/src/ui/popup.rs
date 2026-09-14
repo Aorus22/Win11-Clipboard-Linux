@@ -89,6 +89,9 @@ pub struct Popup {
     last_version: u64,
     last_settings_version: u64,
     last_settings_mtime: Option<std::time::SystemTime>,
+    /// Armed focus-loss dismissal. Dropping the subscription would silently
+    /// stop the popup from ever closing itself, so it lives as long as the view.
+    activation_watch: Option<gpui::Subscription>,
 }
 
 impl PickerTabState {
@@ -146,7 +149,33 @@ impl Popup {
             last_version: version,
             last_settings_version: 1,
             last_settings_mtime: crate::settings::settings_mtime(),
+            activation_watch: None,
         }
+    }
+
+    /// Close the popup when another window — or the desktop itself — takes
+    /// focus (parity with the Tauri build's `WindowEvent::Focused(false)`
+    /// handler, minus its settings-window carve-out).
+    ///
+    /// This is deliberately focus-loss based rather than an outside-click
+    /// detector: under XWayland an `XGrabPointer` only sees clicks that land on
+    /// XWayland-owned pixels, so clicks on the desktop, on window decorations or
+    /// on Wayland-native apps never arrive — the same wall OpenJDK hit in
+    /// JDK-8280993, whose shipped fix is also focus-loss dismissal.
+    ///
+    /// `observe_window_activation` invokes the callback once immediately at
+    /// registration, which happens before the popup has been activated, so only
+    /// a transition *away* from an activated window dismisses it; reacting to
+    /// the first callback would close the popup the instant it opened.
+    pub fn watch_activation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut was_active = false;
+        self.activation_watch = Some(cx.observe_window_activation(window, move |_, window, _| {
+            if window.is_window_active() {
+                was_active = true;
+            } else if was_active {
+                window.remove_window();
+            }
+        }));
     }
 
     pub fn search_mut(&mut self, which: SearchWhich) -> &mut SearchState {
