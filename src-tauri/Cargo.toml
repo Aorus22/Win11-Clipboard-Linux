@@ -31,7 +31,7 @@ parking_lot = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 futures-lite = "2"
-dirs = "6.0"
+dirs = "7.0"
 
 # Direct platform utilities for main window/pointer operations
 arboard = { version = "3.4", features = ["image-data", "wayland-data-control"] }
