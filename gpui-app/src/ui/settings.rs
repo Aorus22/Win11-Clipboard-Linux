@@ -531,7 +531,6 @@ impl SettingsState {
             } else {
                 gpui::rgb(0xffffff)
             })
-            .overflow_hidden()
             .child(body)
             .into_any_element()
     }

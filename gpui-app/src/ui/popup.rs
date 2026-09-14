@@ -163,6 +163,14 @@ impl Popup {
     /// on Wayland-native apps never arrive — the same wall OpenJDK hit in
     /// JDK-8280993, whose shipped fix is also focus-loss dismissal.
     ///
+    /// Dismissal is suppressed while the pointer sits inside the popup, which is
+    /// exactly the Tauri build's `is_mouse_inside` guard. It matters because a
+    /// window-move grab (the drag strip) is a WM-side grab that drops the
+    /// popup's focus at the moment the drag starts; without the guard the popup
+    /// destroys itself on the first pixel of a drag. A click on another window
+    /// or on the desktop cannot happen with the pointer over the popup, so the
+    /// outside-click behaviour is unaffected.
+    ///
     /// `observe_window_activation` invokes the callback once immediately at
     /// registration, which happens before the popup has been activated, so only
     /// a transition *away* from an activated window dismisses it; reacting to
@@ -172,8 +180,11 @@ impl Popup {
         self.activation_watch = Some(cx.observe_window_activation(window, move |_, window, _| {
             if window.is_window_active() {
                 was_active = true;
-            } else if was_active {
+            } else if was_active && !window.is_window_hovered() {
+                crate::drag_log::log("activation: dismissed on focus loss (pointer outside)");
                 window.remove_window();
+            } else if was_active {
+                crate::drag_log::log("activation: focus lost while pointer inside, kept open");
             }
         }));
     }
@@ -1066,6 +1077,77 @@ fn render_section_header(
         .into_any_element()
 }
 
+/// Begin an interactive window move from the drag strip.
+///
+/// On X11 the window is moved by us — `window_drag` explains why the WM path
+/// mutter offers cannot work for this window type. Everywhere else the
+/// compositor owns the move, and gpui already holds the pointer serial it needs.
+fn start_window_drag(window: &mut Window, cx: &mut Context<Popup>) {
+    use crate::window_drag::{POLL_INTERVAL, Tick, WindowDrag};
+
+    // The X window id is located server-side (pid + class + size match); gpui
+    // 0.2.2's X11 `window_handle()` is a hard `unimplemented!()` and taking that
+    // path aborts the whole app. Only safe state reads go through gpui here.
+    // NB: `viewport_size()` proved unreliable for this (it reported the logical
+    // 360x480 on a 720x960 physical window), so the physical size is
+    // reconstructed from `bounds()` x `scale_factor()` — bounds are logical on
+    // the X11 backend (set_bounds divides ConfigureNotify values by scale).
+    let scale = window.scale_factor();
+    let bounds = window.bounds().size;
+    let attempt = WindowDrag::begin_locating(
+        crate::APP_ID,
+        (bounds.width.to_f64() as f32 * scale, bounds.height.to_f64() as f32 * scale),
+    );
+    let mut drag = match attempt {
+        Ok(drag) => drag,
+        Err(reason) => {
+            // Trace why the client-side move is unavailable, then let the
+            // compositor try (the only legal move on Wayland).
+            crate::drag_log::log(format!("client-side drag unavailable: {reason}"));
+            crate::drag_log::log("falling back to window.start_window_move()");
+            window.start_window_move();
+            return;
+        }
+    };
+    crate::drag_log::log(format!(
+        "drag armed: x_window=0x{:x} grab_offset=({},{}) start=({},{}) root=0x{:x}",
+        drag.window(),
+        drag.grab_offset().0,
+        drag.grab_offset().1,
+        drag.start_position().0,
+        drag.start_position().1,
+        drag.root(),
+    ));
+    cx.spawn(async move |this, cx| {
+        loop {
+            // Stop once the popup is gone or the left button is released; the
+            // drag loop owns the pointer check precisely because the window
+            // follows the pointer, so gpui sees almost no local motion.
+            if this.update(cx, |_, _| ()).is_err() {
+                crate::drag_log::log("drag stopped: popup closed");
+                break;
+            }
+            match drag.tick() {
+                Tick::Moved(x, y) => {
+                    crate::drag_log::log(format!("moved to ({x},{y})"));
+                }
+                Tick::Still => {}
+                Tick::Finished(reason) => {
+                    let (ticks, moves) = drag.counters();
+                    crate::drag_log::log(format!(
+                        "drag finished: {reason}; {ticks} ticks, {moves} moves, {:?} elapsed; server says {:?}",
+                        drag.elapsed(),
+                        drag.live_position(),
+                    ));
+                    break;
+                }
+            }
+            cx.background_executor().timer(POLL_INTERVAL).await;
+        }
+    })
+    .detach();
+}
+
 /// Drag strip — port of `DragHandle.tsx`: centered pill + close button.
 /// The whole strip starts a native window move (matches the Tauri drag region);
 /// the close button opts out so its click still lands.
@@ -1081,15 +1163,19 @@ fn render_drag_strip(is_dark: bool, cx: &mut Context<Popup>) -> impl IntoElement
         .cursor_grab()
         .on_mouse_down(
             gpui::MouseButton::Left,
-            cx.listener(|_, event: &gpui::MouseDownEvent, window, _| {
+            cx.listener(|_, event: &gpui::MouseDownEvent, window, cx| {
                 // Close button owns the top-right corner (~28×44px at right-16
                 // top-8, plus margin): never start a move there, or the click
                 // is swallowed by the compositor grab.
                 let win_w = f32::from(window.bounds().size.width);
                 let x = f32::from(event.position.x);
                 let y = f32::from(event.position.y);
+                crate::drag_log::log(format!(
+                    "strip mousedown at ({x:.1},{y:.1}) win_w={win_w:.1} close_corner={}",
+                    x >= win_w - 48.0 && y <= 60.0
+                ));
                 if !(x >= win_w - 48.0 && y <= 60.0) {
-                    window.start_window_move();
+                    start_window_drag(window, cx);
                 }
             }),
         )

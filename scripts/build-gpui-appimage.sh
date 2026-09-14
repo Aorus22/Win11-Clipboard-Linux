@@ -146,7 +146,7 @@ du -h "$OUT" | awk '{print "     size: " $1}'
 # --- Optional user-level install -------------------------------------------
 
 if [[ "$INSTALL" == "1" ]]; then
-    BIN_DIR="$HOME/.local/bin"
+    BIN_DIR="$HOME/Applications"
     APP_DIR_USER="$HOME/.local/share/applications"
     ICON_HOME="$HOME/.local/share/icons/hicolor"
 

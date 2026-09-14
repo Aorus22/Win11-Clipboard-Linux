@@ -20,6 +20,7 @@ use gpui::{
 
 mod app_state;
 mod backend;
+mod drag_log;
 mod geometry;
 mod gnome_shortcut;
 mod history;
@@ -33,6 +34,7 @@ mod theme;
 mod theme_watch;
 mod tray;
 mod ui;
+mod window_drag;
 
 use app_state::Shared;
 use backend::BackendService;
@@ -359,6 +361,12 @@ fn main() {
     // the session type) so the whole process agrees on the X11 backend.
     pin_display_backend_to_x11();
 
+    // The settings window reads the rendering environment (NVIDIA/AppImage
+    // transparency note). The Tauri build initializes this at startup; without
+    // it here the first open of Settings panicked and, with `panic = "abort"`,
+    // took the whole resident app down.
+    win11_clipboard_history_lib::rendering_env::init();
+
     let args: Vec<String> = std::env::args().collect();
     if has_arg(&args, "--version") || has_arg(&args, "-v") {
         println!("win11-clipboard-history-gpui {}", env!("CARGO_PKG_VERSION"));
@@ -484,6 +492,19 @@ fn main() {
                     cx.background_executor()
                         .timer(Duration::from_millis(300))
                         .await;
+                    // 0. GLib main context: libayatana-appindicator registers its
+                    // StatusNotifierItem and delivers menu/click events from
+                    // idle callbacks on this context. Nothing pumps it on its
+                    // own because we never run a gtk::main loop, so without this
+                    // the tray icon never appears in the GNOME top bar and its
+                    // clicks are never delivered. 300 ms cadence keeps the
+                    // top-bar icon and menu responsive (well under a frame at
+                    // human interaction speed) while costing almost nothing.
+                    if tray.is_some() {
+                        while gtk::events_pending() {
+                            gtk::main_iteration_do(false);
+                        }
+                    }
                     // 1. Backend + settings refresh; drop dead popup handles.
                     if let Some(h) = &popup {
                         if h

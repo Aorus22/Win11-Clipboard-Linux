@@ -30,6 +30,7 @@ chrono = "0.4"
 base64 = "0.23"
 image = "0.25"
 x11rb = "0.14"
+# Client-side popup drag (ConfigureWindow + pointer polling) on the X11 backend.
 regex = "1"
 parking_lot = "0.12"
 futures-lite = "2"

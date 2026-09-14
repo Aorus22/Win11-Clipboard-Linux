@@ -93,7 +93,7 @@ Deliberately **not** bundled: GTK3, libvulkan and the GPU drivers — they must
 come from the host so theming and driver matching keep working. The tray
 backend (`libayatana-appindicator`) *is* bundled.
 
-`--install` copies the AppImage to `~/.local/bin`, writes a user desktop entry
+`--install` copies the AppImage to `~/Applications`, writes a user desktop entry
 with an absolute `Exec` (so the `Settings` action works), and installs the
 icons. Autostart and the Super+V binding stay with the wizard.
 
