@@ -81,6 +81,15 @@ fn popup_physical_size(
         .ok()
 }
 
+/// Display scale factor of the popup's window — the factor between gpui's
+/// logical coordinates and the physical frame the cursor and `move_popup_to`
+/// use (2.0 on a 3072x1728 screen reporting `Xft.dpi: 192`).
+fn popup_scale_factor(handle: &WindowHandle<Popup>, cx: &mut gpui::AsyncApp) -> Option<f32> {
+    handle
+        .update(cx, |_, window, _| window.scale_factor())
+        .ok()
+}
+
 /// Move the persistent popup's X11 window (show → cursor-follow position,
 /// hide → [`PARKED_POS`]) without touching the GPUI window itself.
 ///
@@ -199,9 +208,17 @@ fn pin_display_backend_to_x11() {
     eprintln!("[gpui-app] X11/XWayland backend pinned (popup stays out of the dock)");
 }
 
-/// Initial popup origin: cursor-follow on X11, bottom-center on Wayland —
-/// matching the Tauri `WindowController` behavior exactly.
-fn initial_origin(cx: &App, win_w: i32, win_h: i32) -> (f32, f32) {
+/// Initial popup origin in **physical** pixels: cursor-follow on X11,
+/// bottom-center on Wayland — matching the Tauri `WindowController` behavior
+/// exactly.
+///
+/// `win_w`/`win_h` are the popup's real physical size and `scale` its display
+/// scale factor: gpui hands out display bounds in logical pixels, while the
+/// cursor query and the X11 move are physical, so the monitor rect is scaled up
+/// here before anything is compared. Passing `scale = 1.0` clamps in gpui's
+/// logical frame instead — that is what the pre-window creation path needs,
+/// since the scale factor is only readable from a live window.
+fn initial_origin(cx: &App, win_w: i32, win_h: i32, scale: f32) -> (f32, f32) {
     let displays = cx.displays();
     let rect_of = |b: gpui::Bounds<gpui::Pixels>| MonitorRect {
         x: f32::from(b.origin.x) as i32,
@@ -209,7 +226,7 @@ fn initial_origin(cx: &App, win_w: i32, win_h: i32) -> (f32, f32) {
         w: f32::from(b.size.width) as i32,
         h: f32::from(b.size.height) as i32,
     };
-    let first = displays.first().map(|d| rect_of(d.bounds()));
+    let first = displays.first().map(|d| rect_of(d.bounds()).scaled(scale));
     let Some(mon) = first else {
         return (0.0, 0.0);
     };
@@ -223,7 +240,7 @@ fn initial_origin(cx: &App, win_w: i32, win_h: i32) -> (f32, f32) {
             let mon = cx
                 .displays()
                 .iter()
-                .map(|d| rect_of(d.bounds()))
+                .map(|d| rect_of(d.bounds()).scaled(scale))
                 .find(|m| m.contains(cx_, cy))
                 .unwrap_or(mon);
             let (x, y) = clamp_to_monitor(&mon, win_w, win_h, cx_, cy);
@@ -287,8 +304,11 @@ fn open_popup_window(
         PARKED_POS
     } else {
         // Fresh position on every show (follow-mouse parity) + fresh state.
+        // No window exists yet, so the display scale factor is unknown: clamp in
+        // gpui's logical frame here (`scale = 1.0`) and let the first show —
+        // which does know it — re-place the window physically.
         focus_manager::save_focused_window();
-        initial_origin(cx, w as i32, h as i32)
+        initial_origin(cx, w as i32, h as i32, 1.0)
     };
     let handle = cx
         .open_window(popup_options(origin, w, h), {
@@ -712,12 +732,23 @@ fn main() {
                                             window_drag::popup_window_id(APP_ID),
                                         );
                                         focus_manager::save_focused_window();
-                                        let (w, h_) = (
-                                            POPUP_W * st.ui_scale,
-                                            POPUP_H * st.ui_scale,
-                                        );
+                                        // The clamping frame is physical, so it
+                                        // needs the window's *real* size and
+                                        // display scale — not `ui_scale`.
+                                        let (w, h_) = popup_physical_size(h, cx)
+                                            .unwrap_or((
+                                                POPUP_W * st.ui_scale,
+                                                POPUP_H * st.ui_scale,
+                                            ));
+                                        let display_scale =
+                                            popup_scale_factor(h, cx).unwrap_or(1.0);
                                         let origin = cx.update(|cx| {
-                                            initial_origin(cx, w as i32, h_ as i32)
+                                            initial_origin(
+                                                cx,
+                                                w as i32,
+                                                h_ as i32,
+                                                display_scale,
+                                            )
                                         });
                                         match origin {
                                             Ok((x, y)) => {
