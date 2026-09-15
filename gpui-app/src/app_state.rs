@@ -85,8 +85,10 @@ const AUTOSTART_FILE: &str = "win11-clipboard-history-gpui.desktop";
 pub fn autostart_desktop_entry(exe_path: &str) -> String {
     format!(
         "[Desktop Entry]\nType=Application\nName=Win11 Clipboard History (GPUI)\n\
-         Exec={exe_path} --background\nHidden=false\nNoDisplay=false\n\
-         X-GNOME-Autostart-enabled=true\n"
+         Comment=Windows 11-style clipboard history daemon\n\
+         Exec={exe_path} --background\nIcon=win11-clipboard-history-gpui\n\
+         Terminal=false\nHidden=false\nNoDisplay=false\n\
+         X-GNOME-Autostart-enabled=true\nCategories=Utility;\n"
     )
 }
 

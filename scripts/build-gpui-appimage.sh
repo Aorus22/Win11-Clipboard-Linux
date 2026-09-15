@@ -169,6 +169,24 @@ if [[ "$INSTALL" == "1" ]]; then
     update-desktop-database "$APP_DIR_USER" 2>/dev/null || true
     gtk-update-icon-cache -f -t "$ICON_HOME" 2>/dev/null || true
 
+    # Autostart entry: runs silently in background on login
+    AUTOSTART_DIR="$HOME/.config/autostart"
+    mkdir -p "$AUTOSTART_DIR"
+    cat << EOF > "$AUTOSTART_DIR/$BIN_NAME.desktop"
+[Desktop Entry]
+Type=Application
+Name=Win11 Clipboard History (GPUI)
+Comment=Windows 11-style clipboard history daemon
+Exec=$INSTALLED_APPIMAGE --background
+Icon=$BIN_NAME
+Terminal=false
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
+Categories=Utility;
+EOF
+    chmod +x "$AUTOSTART_DIR/$BIN_NAME.desktop"
+    log "Registered autostart: $AUTOSTART_DIR/$BIN_NAME.desktop"
+
     log "Installed: $INSTALLED_APPIMAGE"
-    log "Run it once to finish the wizard (Super+V + autostart)."
 fi

@@ -130,6 +130,15 @@ impl SettingsState {
     }
 
     fn toggle_bool(&mut self, key: &str, cx: &mut Context<Self>) {
+        if key == "autostart" {
+            if app_state::autostart_is_enabled() {
+                let _ = app_state::autostart_disable();
+            } else {
+                let _ = app_state::autostart_enable();
+            }
+            cx.notify();
+            return;
+        }
         self.edit(|s| match key {
             "smart" => s.enable_smart_actions = !s.enable_smart_actions,
             "polish" => s.enable_ui_polish = !s.enable_ui_polish,
@@ -1374,6 +1383,15 @@ impl SettingsState {
                             "Enable animations and compact mode support.",
                             settings.enable_ui_polish,
                             "polish",
+                            is_dark,
+                            cx,
+                        ))
+                        .child(self.toggle_row(
+                            ("switch", 3),
+                            "Start on Boot (Autostart)",
+                            "Launch silently in the background on login.",
+                            app_state::autostart_is_enabled(),
+                            "autostart",
                             is_dark,
                             cx,
                         )),
