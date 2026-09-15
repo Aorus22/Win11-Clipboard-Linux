@@ -117,12 +117,10 @@ fn render_icon_box(item: &ClipboardItem, state: &Popup, compact: bool) -> impl I
         .bg(color_preview
             .map(|a| parse_color(&a.data))
             .unwrap_or_else(|| theme::tertiary_bg(is_dark, tertiary)))
+        // The glyph inherits this (see `icons::icon`).
+        .text_color(icon_color)
         .children(color_preview.is_none().then(|| {
-            icon(
-                if is_text { icons::TYPE_TEXT } else { icons::IMAGE },
-                px(icon_px),
-            )
-            .text_color(icon_color)
+            icon(if is_text { icons::TYPE_TEXT } else { icons::IMAGE }, px(icon_px))
         }))
 }
 

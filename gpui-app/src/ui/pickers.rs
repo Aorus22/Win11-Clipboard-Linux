@@ -2,10 +2,9 @@
 //! + `PickerLayout` / `CategoryStrip` / `CategoryPill` / `SectionHeader`.
 //!
 //! Layout notes: grid columns derive from the window width (deterministic, matches
-//! React at the same width). Category pills wrap instead of horizontal-scroll
-//! (documented delta — all categories visible without scrolling).
+//! React at the same width).
 
-use gpui::{Context, Entity, Window, div, prelude::*, px, uniform_list};
+use gpui::{Context, Entity, ScrollHandle, Window, div, point, prelude::*, px, uniform_list};
 
 use super::icons::{self, icon};
 use super::popup::{Popup, SearchWhich, Tab};
@@ -175,9 +174,77 @@ fn section_label(is_dark: bool, icon_name: &str, label: &str) -> gpui::AnyElemen
 
 // --- Category pills ---
 
+/// React's `CategoryStrip`: one row of pills flanked by chevron buttons that
+/// scroll it (the row itself only moves via those buttons — `overflow-x-hidden`
+/// in the React build, so the pills never wrap onto a second line).
+fn category_strip(
+    group: &'static str,
+    scroll: &ScrollHandle,
+    is_dark: bool,
+    pills: Vec<gpui::AnyElement>,
+    cx: &mut Context<Popup>,
+) -> gpui::AnyElement {
+    let secondary = if is_dark {
+        theme::dark::text_secondary()
+    } else {
+        theme::light::text_secondary()
+    };
+    let hover = hover_bg(is_dark);
+    // 200 px per click, the amount React's `scroll(200)` uses.
+    // Element ids: numeric keys far from the pills' own indices (`group`, 0..n).
+    let arrow = |key: usize,
+                 glyph: &str,
+                 delta: f32,
+                 cx: &mut Context<Popup>|
+     -> gpui::AnyElement {
+        let bar = scroll.clone();
+        div()
+            .id((group, key))
+            .p(px(4.))
+            .rounded_full()
+            .cursor_pointer()
+            .text_color(secondary)
+            .hover(move |s| s.bg(hover))
+            .on_click(cx.listener(move |_, _, _, cx| {
+                // Offsets are negative while scrolled, so left is +delta.
+                let max = f32::from(bar.max_offset().width).max(0.0);
+                let x = (f32::from(bar.offset().x) + delta).clamp(-max, 0.0);
+                let y = bar.offset().y;
+                bar.set_offset(point(px(x), y));
+                cx.notify();
+            }))
+            .child(icon(glyph, px(16.)).flex_shrink_0())
+            .into_any_element()
+    };
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(4.))
+        .child(arrow(98, icons::CHEVRON_LEFT, 200.0, cx))
+        .child(
+            div()
+                .id((group, 99usize))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.))
+                .px(px(6.))
+                .h(px(26.))
+                .min_w(px(0.))
+                .flex_1()
+                .overflow_x_scroll()
+                .track_scroll(scroll)
+                .children(pills),
+        )
+        .child(arrow(97, icons::CHEVRON_RIGHT, -200.0, cx))
+        .into_any_element()
+}
+
 fn category_pills(
     state: &Popup,
     group: &'static str,
+    scroll: &ScrollHandle,
     categories: &[&str],
     selected: Option<&str>,
     has_custom: bool,
@@ -233,7 +300,7 @@ fn category_pills(
             cx,
         ));
     }
-    div().flex().flex_row().flex_wrap().gap(px(6.)).children(pills).into_any_element()
+    category_strip(group, scroll, is_dark, pills, cx)
 }
 
 fn pill(
@@ -271,6 +338,8 @@ fn pill(
             }
         })
         .on_click(cx.listener(on_click))
+        // Never shrink: a squeezed pill would wrap its label onto two lines.
+        .flex_shrink_0()
         .child(label)
         .into_any_element()
 }
@@ -389,7 +458,7 @@ fn render_emoji_categories(state: &Popup, cx: &mut Context<Popup>) -> gpui::AnyE
             cx,
         ));
     }
-    div().flex().flex_row().flex_wrap().gap(px(6.)).children(pills).into_any_element()
+    category_strip("emoji-cat", &state.emoji.category_scroll, is_dark, pills, cx)
 }
 
 /// Glyph grid with fixed 40px rows, chunked deterministically.
@@ -518,6 +587,13 @@ fn render_emoji_grid_virtual(
     let accent = theme::accent();
     let transparent = gpui::rgba(0x00000000);
     let scroll = state.emoji_scroll.clone();
+    let bar_handle = scroll.0.borrow().base_handle.clone();
+    let repaint = {
+        let entity = entity.clone();
+        move |_window: &mut Window, cx: &mut gpui::App| {
+            entity.update(cx, |_, cx| cx.notify());
+        }
+    };
     div()
         .flex()
         .flex_col()
@@ -525,7 +601,10 @@ fn render_emoji_grid_virtual(
         .min_h(px(0.))
         .overflow_hidden()
         .p(px(12.))
-        .child(
+        .child(super::scrollbar::with_scrollbar(
+            "emoji-scrollbar",
+            &bar_handle,
+            is_dark,
             uniform_list("emoji-grid-list", row_count, move |range, _window, _cx| {
                 let mut rows = Vec::new();
                 for row in range {
@@ -588,7 +667,8 @@ fn render_emoji_grid_virtual(
             .flex_1()
             .min_h(px(0.))
             .track_scroll(scroll),
-        )
+            repaint,
+        ))
         .into_any_element()
 }
 
@@ -607,6 +687,13 @@ fn render_symbol_grid_virtual(
     let accent = theme::accent();
     let transparent = gpui::rgba(0x00000000);
     let scroll = state.symbol_scroll.clone();
+    let bar_handle = scroll.0.borrow().base_handle.clone();
+    let repaint = {
+        let entity = entity.clone();
+        move |_window: &mut Window, cx: &mut gpui::App| {
+            entity.update(cx, |_, cx| cx.notify());
+        }
+    };
     div()
         .flex()
         .flex_col()
@@ -614,7 +701,10 @@ fn render_symbol_grid_virtual(
         .min_h(px(0.))
         .overflow_hidden()
         .p(px(12.))
-        .child(
+        .child(super::scrollbar::with_scrollbar(
+            "symbol-scrollbar",
+            &bar_handle,
+            is_dark,
             uniform_list("symbol-grid-list", row_count, move |range, _window, _cx| {
                 let mut rows = Vec::new();
                 for row in range {
@@ -679,7 +769,8 @@ fn render_symbol_grid_virtual(
             .flex_1()
             .min_h(px(0.))
             .track_scroll(scroll),
-        )
+            repaint,
+        ))
         .into_any_element()
 }
 
@@ -708,6 +799,13 @@ fn render_kaomoji_grid_virtual(
     let accent = theme::accent();
     let transparent = gpui::rgba(0x00000000);
     let scroll = state.kaomoji_scroll.clone();
+    let bar_handle = scroll.0.borrow().base_handle.clone();
+    let repaint = {
+        let entity = entity.clone();
+        move |_window: &mut Window, cx: &mut gpui::App| {
+            entity.update(cx, |_, cx| cx.notify());
+        }
+    };
     div()
         .flex()
         .flex_col()
@@ -715,7 +813,10 @@ fn render_kaomoji_grid_virtual(
         .min_h(px(0.))
         .overflow_hidden()
         .p(px(12.))
-        .child(
+        .child(super::scrollbar::with_scrollbar(
+            "kaomoji-scrollbar",
+            &bar_handle,
+            is_dark,
             uniform_list("kaomoji-grid-list", row_count, move |range, _window, _cx| {
                 let mut rows = Vec::new();
                 for row in range {
@@ -784,7 +885,8 @@ fn render_kaomoji_grid_virtual(
             .flex_1()
             .min_h(px(0.))
             .track_scroll(scroll),
-        )
+            repaint,
+        ))
         .into_any_element()
 }
 
@@ -808,6 +910,7 @@ fn render_kaomoji(state: &Popup, window: &Window, cx: &mut Context<Popup>) -> gp
         Some(category_pills(
             state,
             "kaomoji-cat",
+            &state.kaomoji.category_scroll,
             KAOMOJI_CATEGORIES,
             state.kaomoji.category.as_deref(),
             !state.settings.custom_kaomojis.is_empty(),
@@ -866,6 +969,7 @@ fn render_symbol(state: &Popup, window: &Window, cx: &mut Context<Popup>) -> gpu
         sub_children.push(category_pills(
             state,
             "symbol-cat",
+            &state.symbol.category_scroll,
             SYMBOL_CATEGORIES,
             state.symbol.category.as_deref(),
             false,

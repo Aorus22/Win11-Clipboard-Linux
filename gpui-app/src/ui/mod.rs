@@ -9,6 +9,7 @@ pub mod history_item;
 pub mod icons;
 pub mod pickers;
 pub mod popup;
+pub mod scrollbar;
 pub mod search;
 pub mod settings;
 pub mod tabbar;

@@ -2,6 +2,11 @@
 //!
 //! Four tabs (clipboard / symbols / emoji / kaomoji), arrow-key switching,
 //! active + hover tertiary background, 1px bottom border.
+//!
+//! Icon only: React renders the labels inside a `hidden sm:inline` span, and the
+//! popup is 360 px wide — below Tailwind's 640 px `sm` breakpoint — so the Tauri
+//! build never shows them. Icon 16 px + `px-4` gives the 48 px pitch the
+//! reference has.
 
 use gpui::{Context, Window, div, prelude::*, px};
 
@@ -42,7 +47,7 @@ pub fn render_tabbar(state: &Popup, _window: &Window, cx: &mut Context<Popup>) -
         .px(px(16.))
         .border_b_1()
         .border_color(border)
-        .children(TABS.iter().enumerate().map(|(index, (tab, label, icon_name))| {
+        .children(TABS.iter().enumerate().map(|(index, (tab, _label, icon_name))| {
             let active = state.tab == *tab;
             let tab_id = *tab;
             div()
@@ -71,6 +76,5 @@ pub fn render_tabbar(state: &Popup, _window: &Window, cx: &mut Context<Popup>) -
                     cx.notify();
                 }))
                 .child(icon(icon_name, px(16.)).flex_shrink_0())
-                .child(label.to_string())
         }))
 }

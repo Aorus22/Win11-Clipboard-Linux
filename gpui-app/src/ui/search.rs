@@ -163,11 +163,14 @@ impl SearchState {
                 gpui::rgba(0x00000000)
             })
             .track_focus(&self.focus)
+            // The magnifier inherits this from the bar (icons take the color of
+            // their container — see `icons::icon`).
+            .text_color(dim)
             .on_click(cx.listener(|this, _, window, cx| {
                 this.search.focus.focus(window);
                 cx.notify();
             }))
-            .child(icon(icons::SEARCH, px(16.)).text_color(dim).flex_shrink_0())
+            .child(icon(icons::SEARCH, px(16.)).flex_shrink_0())
             .child(self.render_text(text))
             .children(self.text.is_empty().then(|| {
                 div()

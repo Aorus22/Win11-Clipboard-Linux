@@ -51,6 +51,9 @@ pub struct PickerTabState {
     pub category: Option<String>,
     /// (glyph/text, name/category) for the footer preview.
     pub hovered: Option<(String, String)>,
+    /// Horizontal scroll of the category strip (React's `CategoryStrip` keeps
+    /// its own `scrollContainerRef` the same way).
+    pub category_scroll: gpui::ScrollHandle,
 }
 
 const UI_STATE_FILE: &str = "ui_state.json";
@@ -84,6 +87,9 @@ pub struct Popup {
     pub kaomoji: PickerTabState,
     pub symbol: PickerTabState,
     pub symbol_recents: Vec<SymbolItem>,
+    /// Scroll state of the clipboard list — drives its scrollbar (the pickers
+    /// carry their own handles inside `UniformListScrollHandle`).
+    pub list_scroll: gpui::ScrollHandle,
     pub emoji_scroll: UniformListScrollHandle,
     pub kaomoji_scroll: UniformListScrollHandle,
     pub symbol_scroll: UniformListScrollHandle,
@@ -107,6 +113,7 @@ impl PickerTabState {
             focused_category: 0,
             category: None,
             hovered: None,
+            category_scroll: gpui::ScrollHandle::new(),
         }
     }
 }
@@ -147,6 +154,7 @@ impl Popup {
             kaomoji: PickerTabState::new(kaomoji_focus),
             symbol: PickerTabState::new(symbol_focus),
             symbol_recents,
+            list_scroll: gpui::ScrollHandle::default(),
             emoji_scroll: UniformListScrollHandle::default(),
             kaomoji_scroll: UniformListScrollHandle::default(),
             symbol_scroll: UniformListScrollHandle::default(),
@@ -932,11 +940,19 @@ impl Popup {
                 .into_any_element();
         }
         let show_sections = self.search.text.is_empty() && filtered.iter().any(|i| i.pinned);
-        div()
+        let scroll = self.list_scroll.clone();
+        let repaint = {
+            let entity = cx.entity();
+            move |_window: &mut Window, cx: &mut gpui::App| {
+                entity.update(cx, |_, cx| cx.notify());
+            }
+        };
+        let list = div()
             .id("history-list")
             .flex_1()
             .min_h(px(0.))
             .overflow_y_scroll()
+            .track_scroll(&scroll)
             .flex()
             .flex_col()
             .gap(px(8.))
@@ -961,7 +977,8 @@ impl Popup {
                         .into_any_element()
                     })
                     .collect::<Vec<_>>()
-            })
+            });
+        super::scrollbar::with_scrollbar("list-scrollbar", &scroll, self.is_dark, list, repaint)
             .into_any_element()
     }
 
@@ -1073,7 +1090,9 @@ impl Popup {
                     .justify_center()
                     .mb(px(16.))
                     .bg(circle_bg)
-                    .child(icon(icons::CLIPBOARD_LIST, px(32.)).text_color(icon_color)),
+                    // The glyph inherits this (see `icons::icon`).
+                    .text_color(icon_color)
+                    .child(icon(icons::CLIPBOARD_LIST, px(32.))),
             )
             .child(
                 div()
