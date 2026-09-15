@@ -5,15 +5,14 @@
 //! and forwards `AppSignal::ThemeChanged`; the main poll loop recomputes the
 //! theme, rebuilds the tray icon, and bumps shared state (popup reloads).
 
-use std::sync::mpsc::Sender;
-
 use futures_lite::stream::StreamExt;
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::instance::AppSignal;
 
 /// Spawn the listener thread. Non-fatal if D-Bus/portal is unavailable
 /// (the gsettings startup probe remains the fallback).
-pub fn spawn_theme_watcher(tx: Sender<AppSignal>) {
+pub fn spawn_theme_watcher(tx: UnboundedSender<AppSignal>) {
     std::thread::Builder::new()
         .name("gpui-theme-watch".to_string())
         .spawn(move || {
@@ -24,7 +23,7 @@ pub fn spawn_theme_watcher(tx: Sender<AppSignal>) {
         .expect("spawn theme watcher thread");
 }
 
-fn run(tx: Sender<AppSignal>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn run(tx: UnboundedSender<AppSignal>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;

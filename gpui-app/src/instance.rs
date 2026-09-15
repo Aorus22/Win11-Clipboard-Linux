@@ -1,14 +1,19 @@
 //! Single-instance guard + IPC for `--toggle` / `--settings-open` client mode.
 //!
 //! The first instance binds `$XDG_RUNTIME_DIR/win11-clipboard-gpui.sock` and
-//! forwards newline-delimited words to the main poll loop. A second invocation
+//! forwards newline-delimited words to the main loop. A second invocation
 //! sends its word and exits immediately (fast toggle path for DE shortcuts).
+//!
+//! Delivery into the app is event-driven: the accept thread pushes into a
+//! `tokio::sync::mpsc` unbounded channel and the main loop wakes on
+//! `poll_recv` immediately instead of waiting out the poll interval.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::mpsc::Sender;
 use std::time::Duration;
+
+use tokio::sync::mpsc::UnboundedSender;
 
 pub const SOCKET_NAME: &str = "win11-clipboard-gpui.sock";
 
@@ -62,7 +67,7 @@ pub enum InstanceRole {
 /// Acquire the single-instance socket. On success as primary, spawns the accept
 /// thread delivering `AppSignal`s to `tx`. If the socket is stale (file exists
 /// but nobody listens), it is reclaimed.
-pub fn acquire(tx: Sender<AppSignal>) -> InstanceRole {
+pub fn acquire(tx: UnboundedSender<AppSignal>) -> InstanceRole {
     let path = socket_path();
     match UnixListener::bind(&path) {
         Ok(listener) => {
@@ -111,7 +116,7 @@ fn probe() -> bool {
     UnixStream::connect(socket_path()).is_ok()
 }
 
-fn accept_loop(listener: UnixListener, tx: Sender<AppSignal>) {
+fn accept_loop(listener: UnixListener, tx: UnboundedSender<AppSignal>) {
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
         let mut reader = BufReader::new(stream);
@@ -127,7 +132,6 @@ fn accept_loop(listener: UnixListener, tx: Sender<AppSignal>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc::channel;
 
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("gpui-test-{name}-{}.sock", std::process::id()))
@@ -152,21 +156,32 @@ mod tests {
         let _ = std::fs::remove_file(&stale);
 
         unsafe { std::env::set_var("GPUI_SOCK_PATH", &live) };
-        let (tx, rx) = channel();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         assert!(matches!(acquire(tx), InstanceRole::Primary));
         send_signal(AppSignal::Toggle).expect("send");
-        let got = rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("receive signal");
+        // The accept thread delivers asynchronously; poll briefly instead of
+        // assuming it has already run.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let got = loop {
+            match rx.try_recv() {
+                Ok(sig) => break sig,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+                    if std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("receive signal: {e}"),
+            }
+        };
         assert_eq!(got, AppSignal::Toggle);
         // A second acquire while the primary lives reports Notified.
-        let (tx2, _rx2) = channel();
+        let (tx2, _rx2) = tokio::sync::mpsc::unbounded_channel();
         assert!(matches!(acquire(tx2), InstanceRole::Notified));
 
         // Stale regular file: acquire must not panic or hang.
         std::fs::write(&stale, "stale").expect("write stale file");
         unsafe { std::env::set_var("GPUI_SOCK_PATH", &stale) };
-        let (tx3, _rx3) = channel();
+        let (tx3, _rx3) = tokio::sync::mpsc::unbounded_channel();
         let _ = acquire(tx3);
 
         unsafe { std::env::remove_var("GPUI_SOCK_PATH") };

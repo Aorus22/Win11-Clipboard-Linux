@@ -9,7 +9,7 @@
 //! - `--version` / `-v`: print version.
 
 use std::path::PathBuf;
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
@@ -437,7 +437,7 @@ fn main() {
     );
 
     // Single instance first: a duplicate normal start exits quietly.
-    let (sig_tx, sig_rx) = mpsc::channel();
+    let (sig_tx, mut sig_rx) = tokio::sync::mpsc::unbounded_channel();
     match instance::acquire(sig_tx.clone()) {
         InstanceRole::Notified => {
             eprintln!("[gpui-app] another instance is running; exiting");
@@ -489,17 +489,19 @@ fn main() {
 
             cx.spawn(async move |cx| {
                 loop {
+                    // Short fixed cadence (was 300 ms): keeps toggle latency
+                    // low and tray clicks / X11 hotkeys / backend refresh
+                    // responsive. Signals are drained below every tick.
                     cx.background_executor()
-                        .timer(Duration::from_millis(300))
+                        .timer(Duration::from_millis(50))
                         .await;
                     // 0. GLib main context: libayatana-appindicator registers its
                     // StatusNotifierItem and delivers menu/click events from
                     // idle callbacks on this context. Nothing pumps it on its
                     // own because we never run a gtk::main loop, so without this
                     // the tray icon never appears in the GNOME top bar and its
-                    // clicks are never delivered. 300 ms cadence keeps the
-                    // top-bar icon and menu responsive (well under a frame at
-                    // human interaction speed) while costing almost nothing.
+                    // clicks are never delivered. Pumped every tick (50 ms or on
+                    // signal wake) while costing almost nothing.
                     if tray.is_some() {
                         while gtk::events_pending() {
                             gtk::main_iteration_do(false);
