@@ -12,6 +12,7 @@ use gpui::{
 };
 
 use super::icons::{self, icon};
+use super::titlebar;
 use crate::app_state::{self, Shared};
 use crate::backend::BackendService;
 use crate::settings::system_prefers_dark;
@@ -183,16 +184,15 @@ impl Focusable for WizardState {
 // --- Render ---
 
 impl Render for WizardState {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let is_dark = self.is_dark();
+        // Sessions where the compositor paints no title bar get ours (min/max/close).
+        let client_chrome = titlebar::needs_client_chrome(window);
         div()
             .id("wizard-root")
             .flex()
             .flex_col()
-            .items_center()
-            .justify_center()
             .size_full()
-            .p(px(24.))
             .bg(if is_dark {
                 theme::dark::bg_primary()
             } else {
@@ -207,14 +207,24 @@ impl Render for WizardState {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.handle_key(event, window, cx);
             }))
+            .children(client_chrome.then(|| titlebar::render_titlebar(is_dark)))
             .child(
                 div()
-                    .w_full()
-                    .max_w(px(384.))
+                    .flex_1()
                     .flex()
                     .flex_col()
-                    .child(self.render_step(cx))
-                    .child(self.render_dots(cx)),
+                    .items_center()
+                    .justify_center()
+                    .p(px(24.))
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(px(384.))
+                            .flex()
+                            .flex_col()
+                            .child(self.render_step(cx))
+                            .child(self.render_dots(cx)),
+                    ),
             )
     }
 }

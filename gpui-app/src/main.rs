@@ -274,11 +274,20 @@ fn popup_options(origin: (f32, f32), w: f32, h: f32) -> WindowOptions {
     }
 }
 
-fn centered_options(w: f32, h: f32, cx: &App) -> WindowOptions {
+fn centered_options(w: f32, h: f32, title: &'static str, cx: &App) -> WindowOptions {
     let bounds = Bounds::centered(None, gpui::size(px(w), px(h)), cx);
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
+        // Client-side decorations. Whatever the session answers with decides who
+        // paints the title bar: `Decorations::Server` means the WM does, and the
+        // views then draw `ui::titlebar` (min/max/close + drag) to fill the gap
+        // when it answers `Decorations::Client` instead.
         window_decorations: Some(WindowDecorations::Client),
+        // Window title: X11 takes it from here, Wayland via `set_window_title`.
+        titlebar: Some(gpui::TitlebarOptions {
+            title: Some(title.into()),
+            ..Default::default()
+        }),
         show: true,
         focus: true,
         app_id: Some(APP_ID.into()),
@@ -395,7 +404,9 @@ fn open_settings_window(
     shared: &Shared,
 ) -> WindowHandle<SettingsState> {
     let handle = cx
-        .open_window(centered_options(SETTINGS_W, SETTINGS_H, cx), {
+        .open_window(
+            centered_options(SETTINGS_W, SETTINGS_H, "Settings — Clipboard History", cx),
+            {
             let backend = Arc::clone(backend);
             let shared = Arc::clone(shared);
             move |_window, cx: &mut App| {
@@ -416,6 +427,7 @@ fn open_settings_window(
         })
         .expect("failed to open GPUI settings window");
     let _ = handle.update(cx, |state, window, cx| {
+        window.set_window_title("Settings — Clipboard History");
         state.focus.focus(window);
         cx.notify();
     });
@@ -428,7 +440,9 @@ fn open_wizard_window(
     shared: &Shared,
 ) -> WindowHandle<WizardState> {
     let handle = cx
-        .open_window(centered_options(SETUP_W, SETUP_H, cx), {
+        .open_window(
+            centered_options(SETUP_W, SETUP_H, "Setup — Clipboard History", cx),
+            {
             let backend = Arc::clone(backend);
             let shared = Arc::clone(shared);
             move |_window, cx: &mut App| {
@@ -438,6 +452,7 @@ fn open_wizard_window(
         })
         .expect("failed to open GPUI setup wizard window");
     let _ = handle.update(cx, |state, window, cx| {
+        window.set_window_title("Setup — Clipboard History");
         state.focus.focus(window);
         cx.notify();
     });

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use super::controls::{SliderId, TextField, slider, switch};
 use super::icons::{self, icon};
+use super::titlebar;
 use crate::app_state::{self, Shared};
 use crate::backend::BackendService;
 use crate::settings::{AppSettings, resolve_dark};
@@ -413,6 +414,8 @@ impl Render for SettingsState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = self.settings();
         let is_dark = self.is_dark();
+        // Sessions where the compositor paints no title bar get ours (min/max/close).
+        let client_chrome = titlebar::needs_client_chrome(window);
         div()
             .id("settings-root")
             .flex()
@@ -433,6 +436,7 @@ impl Render for SettingsState {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.handle_key(event, window, cx);
             }))
+            .children(client_chrome.then(|| titlebar::render_titlebar(is_dark)))
             .child(self.render_header(cx))
             .child(
                 div()
@@ -441,6 +445,7 @@ impl Render for SettingsState {
                     .min_h(px(0.))
                     .overflow_y_scroll()
                     .px(px(32.))
+                    .pt(px(24.))
                     .pb(px(32.))
                     .flex()
                     .flex_col()
@@ -465,15 +470,31 @@ impl SettingsState {
         let show_pill = self.saved_flash || self.save_error.is_some();
         let is_error = self.save_error.is_some();
         div()
+            .id("settings-header")
             .flex()
             .flex_row()
             .items_center()
             .justify_between()
+            .gap(px(12.))
             .px(px(32.))
             .py(px(24.))
+            .border_b_1()
+            .border_color(if is_dark {
+                theme::white_pct(0.05)
+            } else {
+                theme::gray::g200()
+            })
             .flex_shrink_0()
+            // Client-side decorations: gpui paints no title bar for this window, so
+            // the header is also the drag region (`cursor_grab` advertises it). The
+            // close button opts out of the move below.
+            .cursor_grab()
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|_, _, window, _| window.start_window_move()),
+            )
             .child(
-                div().flex().flex_col().child(
+                div().flex().flex_col().flex_1().min_w(px(0.)).child(
                     div()
                         .text_size(px(24.))
                         .font_weight(gpui::FontWeight::BOLD)
@@ -492,11 +513,12 @@ impl SettingsState {
             )
             .child(
                 div()
-                    .h(px(32.))
                     .flex()
+                    .flex_row()
                     .items_center()
                     .justify_end()
-                    .min_w(px(100.))
+                    .gap(px(4.))
+                    .flex_shrink_0()
                     .children(show_pill.then(|| {
                         div()
                             .flex()
@@ -578,7 +600,7 @@ impl SettingsState {
                             .child(icon(icon_name, px(24.)).flex_shrink_0()),
                     )
                     .child(
-                        div().flex().flex_col()
+                        div().flex().flex_col().flex_1().min_w(px(0.))
                             .child(
                                 div()
                                     .text_size(px(14.))
@@ -602,7 +624,16 @@ impl SettingsState {
     }
 
     fn section_title(&self, is_dark: bool, title: &str, desc: &str) -> gpui::AnyElement {
+        // Same 24px inset + separator as `card_head`, so every card title lines up
+        // with its body instead of sitting flush against the card edge.
         div()
+            .p(px(24.))
+            .border_b_1()
+            .border_color(if is_dark {
+                theme::white_pct(0.05)
+            } else {
+                gpui::rgba(0xe5e7eb99)
+            })
             .flex()
             .flex_col()
             .child(
@@ -779,7 +810,7 @@ impl SettingsState {
                                 .items_center()
                                 .justify_between()
                                 .child(
-                                    div().flex().flex_col()
+                                    div().flex().flex_col().flex_1().min_w(px(0.))
                                         .child(
                                             div()
                                                 .text_size(px(12.25))
@@ -812,7 +843,7 @@ impl SettingsState {
                                 .items_center()
                                 .justify_between()
                                 .child(
-                                    div().flex().flex_col()
+                                    div().flex().flex_col().flex_1().min_w(px(0.))
                                         .child(
                                             div()
                                                 .text_size(px(12.25))
@@ -916,7 +947,6 @@ impl SettingsState {
                 .child(
                     div()
                         .p(px(24.))
-                        .pt(px(20.))
                         .flex()
                         .flex_col()
                         .gap(px(16.))
@@ -959,7 +989,6 @@ impl SettingsState {
                         )
                         .child(
                             div()
-                                .mt(px(16.))
                                 .p(px(12.))
                                 .rounded(px(8.))
                                 .border_1()
@@ -1026,7 +1055,7 @@ impl SettingsState {
                         })
                         .child(icon(icons::ALERT_TRIANGLE, px(20.)).flex_shrink_0())
                         .child(
-                            div().flex().flex_col()
+                            div().flex().flex_col().flex_1().min_w(px(0.))
                                 .child(div().text_size(px(10.5)).child(reason))
                                 .child(
                                     div()
@@ -1199,7 +1228,7 @@ impl SettingsState {
                                 .items_center()
                                 .justify_between()
                                 .child(
-                                    div().flex().flex_col()
+                                    div().flex().flex_col().flex_1().min_w(px(0.))
                                         .child(div().text_size(px(12.25)).child("Maximum History Size"))
                                         .child(
                                             div()
@@ -1263,6 +1292,8 @@ impl SettingsState {
                     })
                     .child(
                         div()
+                            .flex_1()
+                            .min_w(px(0.))
                             .text_size(px(12.25))
                             .overflow_hidden()
                             .child(item.text.clone()),
@@ -1366,7 +1397,7 @@ impl SettingsState {
             .items_center()
             .justify_between()
             .child(
-                div().flex().flex_col()
+                div().flex().flex_col().flex_1().min_w(px(0.))
                     .child(div().text_size(px(12.25)).child(label.to_string()))
                     .child(
                         div()

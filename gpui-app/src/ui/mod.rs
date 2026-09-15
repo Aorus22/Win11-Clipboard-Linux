@@ -13,4 +13,5 @@ pub mod scrollbar;
 pub mod search;
 pub mod settings;
 pub mod tabbar;
+pub mod titlebar;
 pub mod wizard;
