@@ -567,11 +567,11 @@ fn render_emoji_grid_virtual(
                                         cx.notify();
                                     });
                                 })
-                                .on_click(move |_, window, cx| {
-                                    window.remove_window();
+                                .on_click(move |_, _, cx| {
                                     let e = e_click.clone();
                                     let ch = ch_click.clone();
                                     e.update(cx, |popup, cx| {
+                                        popup.request_hide();
                                         let _ = popup.backend.paste_text(&ch, true);
                                         popup.refresh_items();
                                         popup.after_filter_change();
@@ -656,10 +656,10 @@ fn render_symbol_grid_virtual(
                                         cx.notify();
                                     });
                                 })
-                                .on_click(move |_, window, cx| {
-                                    window.remove_window();
+                                .on_click(move |_, _, cx| {
                                     let e = e_click.clone();
                                     e.update(cx, |popup, cx| {
+                                        popup.request_hide();
                                         crate::pickers::record_symbol_usage(&click_item);
                                         popup.symbol_recents =
                                             crate::pickers::load_recent_symbols();
@@ -756,11 +756,11 @@ fn render_kaomoji_grid_virtual(
                                         cx.notify();
                                     });
                                 })
-                                .on_click(move |_, window, cx| {
-                                    window.remove_window();
+                                .on_click(move |_, _, cx| {
                                     let e = e_click.clone();
                                     let t = click_text.clone();
                                     e.update(cx, |popup, cx| {
+                                        popup.request_hide();
                                         let _ = popup.backend.paste_text(&t, false);
                                         popup.refresh_items();
                                         popup.after_filter_change();

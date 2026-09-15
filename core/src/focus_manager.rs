@@ -16,22 +16,54 @@ const FOCUS_RESTORE_TIMEOUT: Duration = Duration::from_millis(750);
 /// Stores the ID of the window that had focus before we opened
 static LAST_FOCUSED_WINDOW: AtomicU32 = AtomicU32::new(0);
 
+/// X id of our own popup window, when known. Focus sitting on the popup is
+/// meaningless as a restore target — and after the popup is unmapped the X
+/// server may still keep input focus on that id (X permits focus on unmapped
+/// windows), which otherwise made every later save capture the dead popup id
+/// and turn it into a self-sustaining restore target.
+static POPUP_WINDOW_ID: AtomicU32 = AtomicU32::new(0);
+
+/// The gpui-app owner records the popup's X window id here (and clears it on
+/// hide) so save/restore below can exclude it.
+pub fn note_popup_window(id: Option<u32>) {
+    POPUP_WINDOW_ID.store(id.unwrap_or(0), Ordering::SeqCst);
+}
+
+fn popup_window_id() -> u32 {
+    POPUP_WINDOW_ID.load(Ordering::SeqCst)
+}
+
 pub fn save_focused_window() {
     if !crate::session::is_x11() {
         return;
     }
 
-    // Never reuse a target captured for an older popup invocation if this
-    // query fails. Pasting nowhere is safer than redirecting input to a stale
-    // application window.
-    LAST_FOCUSED_WINDOW.store(0, Ordering::SeqCst);
-
     match crate::paste_sync::focused_window() {
-        Some(window_id) => {
+        Some(window_id)
+            if window_id != 0
+                && window_id != popup_window_id()
+                && crate::paste_sync::window_is_live(window_id)
+                && crate::paste_sync::window_has_wm_class(window_id) =>
+        {
             LAST_FOCUSED_WINDOW.store(window_id, Ordering::SeqCst);
             eprintln!("[FocusManager] Saved focused window: {}", window_id);
         }
-        None => eprintln!("[FocusManager] Failed to query the focused X11 window"),
+        // Focus is on our own popup, a WM-internal "shadow" id (no WM_CLASS,
+        // happens under GNOME/XWayland), a dead window, or a NULL id:
+        // keep the capture from before the popup went live — that is the
+        // window paste should reach.
+        Some(_) => {
+            eprintln!(
+                "[FocusManager] Focused id unusable (popup/dead/WM shadow); keeping previous capture"
+            )
+        }
+        None => {
+            // Never reuse a target captured for an older popup invocation if
+            // this query fails. Pasting nowhere is safer than redirecting
+            // input to a stale application window.
+            LAST_FOCUSED_WINDOW.store(0, Ordering::SeqCst);
+            eprintln!("[FocusManager] Failed to query the focused X11 window")
+        }
     }
 }
 
@@ -40,6 +72,10 @@ pub fn restore_focused_window() -> Result<bool, String> {
 
     if window_id == 0 {
         return Err("No previous window saved".to_string());
+    }
+
+    if window_id == popup_window_id() {
+        return Err("Refusing to restore focus to our own popup".to_string());
     }
 
     eprintln!("[FocusManager] Restoring focus to window: {}", window_id);

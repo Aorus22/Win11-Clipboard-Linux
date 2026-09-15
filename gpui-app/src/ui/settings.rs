@@ -143,6 +143,7 @@ impl SettingsState {
             "smart" => s.enable_smart_actions = !s.enable_smart_actions,
             "polish" => s.enable_ui_polish = !s.enable_ui_polish,
             "tray" => s.enable_dynamic_tray_icon = !s.enable_dynamic_tray_icon,
+            "focus" => s.close_on_focus_loss = !s.close_on_focus_loss,
             _ => {}
         });
         self.commit();
@@ -757,6 +758,7 @@ impl SettingsState {
             );
         }
         let tray_on = settings.enable_dynamic_tray_icon;
+        let focus_on = settings.close_on_focus_loss;
         self.card(
             is_dark,
             div()
@@ -801,6 +803,39 @@ impl SettingsState {
                                     is_dark,
                                     cx,
                                     |this, _, _, cx| this.toggle_bool("tray", cx),
+                                )),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div().flex().flex_col()
+                                        .child(
+                                            div()
+                                                .text_size(px(12.25))
+                                                .child("Close on Focus Loss"),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(10.5))
+                                                .mt(px(2.))
+                                                .text_color(if is_dark {
+                                                    theme::gray::g400()
+                                                } else {
+                                                    theme::gray::g500()
+                                                })
+                                                .child("Close the popup when another window takes focus. Turn off for focus-follows-mouse setups (a click outside still closes it)."),
+                                        ),
+                                )
+                                .child(super::controls::switch(
+                                    ("switch", 4),
+                                    focus_on,
+                                    is_dark,
+                                    cx,
+                                    |this, _, _, cx| this.toggle_bool("focus", cx),
                                 )),
                         ),
                 )

@@ -4,10 +4,11 @@
 //! watcher thread bumps a version counter and the poll task refreshes the snapshot.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{
-    Context, FocusHandle, Focusable, KeyDownEvent, Render, ScrollStrategy,
-    UniformListScrollHandle, Window, div, prelude::*, px,
+    Animation, AnimationExt, Context, FocusHandle, Focusable, KeyDownEvent, Render,
+    ScrollStrategy, UniformListScrollHandle, Window, div, prelude::*, px,
 };
 use serde::{Deserialize, Serialize};
 
@@ -89,6 +90,9 @@ pub struct Popup {
     last_version: u64,
     last_settings_version: u64,
     last_settings_mtime: Option<std::time::SystemTime>,
+    /// Bumped on every show so the appear animation gets a fresh element id
+    /// and visibly restarts (the window — and this view — is persistent now).
+    appear_gen: u64,
     /// Armed focus-loss dismissal. Dropping the subscription would silently
     /// stop the popup from ever closing itself, so it lives as long as the view.
     activation_watch: Option<gpui::Subscription>,
@@ -149,8 +153,39 @@ impl Popup {
             last_version: version,
             last_settings_version: 1,
             last_settings_mtime: crate::settings::settings_mtime(),
+            appear_gen: 0,
             activation_watch: None,
         }
+    }
+
+    /// Ask the main loop to park the persistent window offscreen instead of
+    /// destroying it (called from every place that used to `remove_window`).
+    pub fn request_hide(&self) {
+        self.shared.lock().hide_popup_requested = true;
+    }
+
+    /// Record that this window handled a pointer press.
+    ///
+    /// The evdev outside-click watcher cannot ask X where the pointer is
+    /// (frozen over Wayland-native windows), so it decides inside/outside by
+    /// whether the popup received the press it just read off the device.
+    pub fn note_pointer_down(&self) {
+        let mut shared = self.shared.lock();
+        shared.popup_pointer_down_seq = shared.popup_pointer_down_seq.wrapping_add(1);
+        shared.popup_last_pointer_down = Some(std::time::Instant::now());
+    }
+
+    /// Reset per-open state for a fresh show: latest items, cleared search and
+    /// selection, requested tab, and a new appear-animation generation.
+    pub fn prepare_for_show(&mut self, tab: Tab, cx: &mut Context<Self>) {
+        self.refresh_items();
+        self.search.clear();
+        self.search_visible = false;
+        self.focused = 0;
+        self.tab = tab;
+        self.after_filter_change();
+        self.appear_gen += 1;
+        cx.notify();
     }
 
     /// Close the popup when another window — or the desktop itself — takes
@@ -177,12 +212,19 @@ impl Popup {
     /// the first callback would close the popup the instant it opened.
     pub fn watch_activation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut was_active = false;
-        self.activation_watch = Some(cx.observe_window_activation(window, move |_, window, _| {
+        self.activation_watch = Some(cx.observe_window_activation(window, move |this, window, _| {
             if window.is_window_active() {
                 was_active = true;
             } else if was_active && !window.is_window_hovered() {
-                crate::drag_log::log("activation: dismissed on focus loss (pointer outside)");
-                window.remove_window();
+                // Focus-follows-mouse desktops move focus on hover, so focus
+                // loss alone must not close when the user disabled it — the
+                // evdev click watcher still closes on a physical outside click.
+                if this.shared.lock().settings.close_on_focus_loss {
+                    crate::drag_log::log("activation: dismissed on focus loss (pointer outside)");
+                    this.request_hide();
+                } else {
+                    crate::drag_log::log("activation: focus loss ignored (close_on_focus_loss=off)");
+                }
             } else if was_active {
                 crate::drag_log::log("activation: focus lost while pointer inside, kept open");
             }
@@ -311,12 +353,13 @@ impl Popup {
         &mut self,
         text: &str,
         record_emoji: bool,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Close (don't hide): the poll loop reopens on toggle. Per-window close
-        // keeps the settings window alive, unlike cx.hide().
-        window.remove_window();
+        // Hide (don't destroy): the poll loop parks the persistent window
+        // offscreen on toggle. Per-window hide keeps the settings window
+        // alive, unlike cx.hide().
+        self.request_hide();
         let _ = focus_manager::restore_focused_window();
         let _ = self.backend.paste_text(text, record_emoji);
         cx.notify();
@@ -560,8 +603,8 @@ impl Popup {
             return;
         };
         // Parity with the Tauri `paste_item` command: hide → restore focus → paste.
-        // Per-window close (poll loop reopens on toggle).
-        window.remove_window();
+        // Persistent window: ask the poll loop to park it offscreen.
+        self.request_hide();
         let _ = focus_manager::restore_focused_window();
         if self.backend.paste(&item).is_err() {
             self.refresh_items();
@@ -648,7 +691,8 @@ impl Popup {
             if self.tab == Tab::Clipboard && self.search_visible {
                 self.close_search(window, cx);
             } else {
-                window.remove_window();
+                self.request_hide();
+                let _ = focus_manager::restore_focused_window();
             }
             cx.stop_propagation();
             return;
@@ -804,9 +848,36 @@ impl Render for Popup {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.handle_root_key(event, window, cx);
             }))
+            // Every press that reaches this window is ours — record it for the
+            // evdev outside-click watcher before the child handlers run (none
+            // of them stops propagation except the close button, which hides
+            // the popup anyway). Registered per button so a press with any
+            // mouse button counts as "inside".
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _: &gpui::MouseDownEvent, _, _| this.note_pointer_down()),
+            )
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(|this, _: &gpui::MouseDownEvent, _, _| this.note_pointer_down()),
+            )
+            .on_mouse_down(
+                gpui::MouseButton::Middle,
+                cx.listener(|this, _: &gpui::MouseDownEvent, _, _| this.note_pointer_down()),
+            )
             .child(render_drag_strip(is_dark, cx))
             .child(render_tabbar(self, window, cx))
             .child(self.render_body(window, cx))
+            // Appear animation (fade-in): the id carries a generation counter
+            // bumped on every show, so the one-shot animation visibly restarts
+            // even though the window — and this view — is persistent now.
+            // Linear 250 ms so the fade is actually perceptible (ease-out
+            // curves finish ~70% in the first frames and look instant).
+            .with_animation(
+                ("popup-appear", self.appear_gen as usize),
+                Animation::new(Duration::from_millis(250)),
+                |el, delta| el.opacity(delta),
+            )
     }
 }
 
@@ -1213,8 +1284,10 @@ fn render_drag_strip(is_dark: bool, cx: &mut Context<Popup>) -> impl IntoElement
                         cx.stop_propagation();
                     }),
                 )
-                .on_click(cx.listener(|_, _, window, _| {
-                    window.remove_window();
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.request_hide();
+                    let _ = focus_manager::restore_focused_window();
+                    cx.notify();
                 }))
                 .child(icon(icons::X, px(20.)).flex_shrink_0()),
         )

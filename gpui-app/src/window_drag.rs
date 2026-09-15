@@ -57,9 +57,9 @@ pub struct WindowDrag {
 impl WindowDrag {
     /// Start moving this process's popup window, located on the X server.
     ///
-    /// `physical_size` is the popup's X window geometry in physical pixels (on
-    /// gpui 0.2.2's X11 backend, `Window::viewport_size()` already reports
-    /// exactly that). The X window id itself is found server-side because
+    /// `physical_size` is the popup's X window geometry in physical pixels —
+    /// pass `bounds() x scale_factor()` (NOT `viewport_size()`, which reports
+    /// logical size on HiDPI). The X window id itself is found server-side because
     /// gpui's X11 `window_handle()` is a hard `unimplemented!()` — calling it
     /// panics and, with `panic = "abort"` in the release profile, kills the
     /// whole app.
@@ -67,14 +67,7 @@ impl WindowDrag {
     /// The `Err` text is the reason the drag fell back to the compositor path;
     /// it goes straight into the drag trace.
     pub fn begin_locating(app_id: &str, physical_size: (f32, f32)) -> Result<Self, String> {
-        let (conn, screen) =
-            x11rb::connect(None).map_err(|error| format!("x11rb::connect failed: {error}"))?;
-        let root = conn
-            .setup()
-            .roots
-            .get(screen)
-            .map(|screen| screen.root)
-            .ok_or_else(|| format!("no X screen {screen}"))?;
+        let (conn, root) = connect_root()?;
         let expected = (physical_size.0.round() as i32, physical_size.1.round() as i32);
         let window = locate_popup_window(
             &conn,
@@ -82,6 +75,7 @@ impl WindowDrag {
             app_id,
             std::process::id(),
             expected,
+            true,
         )?;
         Self::attach(conn, root, window)
     }
@@ -197,18 +191,224 @@ impl WindowDrag {
     }
 }
 
+/// Connect to the X server and resolve the default root window.
+fn connect_root() -> Result<(RustConnection, u32), String> {
+    let (conn, screen) =
+        x11rb::connect(None).map_err(|error| format!("x11rb::connect failed: {error}"))?;
+    let root = conn
+        .setup()
+        .roots
+        .get(screen)
+        .map(|screen| screen.root)
+        .ok_or_else(|| format!("no X screen {screen}"))?;
+    Ok((conn, root))
+}
+
+/// Reposition this process's popup window without a drag in progress.
+///
+/// Used to park the persistent popup offscreen ("hide") and to bring it back
+/// to the cursor-follow position ("show") — both without destroying the GPUI
+/// window, so toggling stays instant. Same server-side locate as the drag
+/// path; fails (logged, non-fatal) on native Wayland where there is no X
+/// window to configure.
+///
+/// `ConfigureWindow` is legal on unmapped windows and takes effect on map,
+/// so — unlike the drag — this deliberately does NOT require the window to
+/// be viewable: showing moves first, then maps.
+pub fn move_popup_to(app_id: &str, physical_size: (f32, f32), x: i32, y: i32) -> Result<(), String> {
+    let (conn, root) = connect_root()?;
+    let expected = (physical_size.0.round() as i32, physical_size.1.round() as i32);
+    let window = locate_popup_window(
+        &conn,
+        root,
+        app_id,
+        std::process::id(),
+        expected,
+        false,
+    )?;
+    let aux = ConfigureWindowAux {
+        x: Some(x),
+        y: Some(y),
+        ..Default::default()
+    };
+    conn.configure_window(window, &aux)
+        .map_err(|error| format!("ConfigureWindow error: {error}"))?
+        .check()
+        .map_err(|error| format!("ConfigureWindow rejected: {error}"))?;
+    conn.flush()
+        .map_err(|error| format!("flush error: {error}"))?;
+    Ok(())
+}
+
+/// Map or unmap this process's popup window.
+///
+/// Hiding parks nothing: client `ConfigureWindow` moves on a *managed* X11
+/// window go through the WM as `ConfigureRequest`s, and Mutter silently
+/// clamps absurd positions (e.g. -10000) back onscreen — verified live: the
+/// server accepted the move yet the window stayed put. Unmapping is honored
+/// unconditionally, so hide = unmap, show = move + map.
+pub fn set_popup_mapped(
+    app_id: &str,
+    physical_size: (f32, f32),
+    mapped: bool,
+) -> Result<(), String> {
+    let (conn, root) = connect_root()?;
+    let expected = (physical_size.0.round() as i32, physical_size.1.round() as i32);
+    // No viewable requirement in either direction: mapping targets an
+    // unmapped window by definition, and unmapping an already-unmapped one
+    // is a harmless server-side no-op (keeps hide idempotent).
+    let window = locate_popup_window(
+        &conn,
+        root,
+        app_id,
+        std::process::id(),
+        expected,
+        false,
+    )?;
+    if mapped {
+        conn.map_window(window)
+            .map_err(|error| format!("MapWindow error: {error}"))?
+            .check()
+            .map_err(|error| format!("MapWindow rejected: {error}"))?;
+    } else {
+        conn.unmap_window(window)
+            .map_err(|error| format!("UnmapWindow error: {error}"))?
+            .check()
+            .map_err(|error| format!("UnmapWindow rejected: {error}"))?;
+    }
+    conn.flush()
+        .map_err(|error| format!("flush error: {error}"))?;
+    Ok(())
+}
+
+/// Live geometry (device px: x, y, w, h) of this process's popup X window.
+///
+/// Matches WM_CLASS + pid like the drag locate, but with NO size precondition
+/// and NO viewable requirement beyond being mapped: it works at the window's
+/// current position (it may have been dragged) and never matches the 2x2
+/// holder — the largest match wins.
+///
+/// The outside-click test no longer uses X for this (the X pointer is frozen
+/// over Wayland-native windows, so the popup reports the presses it handles
+/// instead); kept for X-side debugging.
+#[allow(dead_code)]
+pub fn popup_geometry(app_id: &str) -> Option<(i32, i32, i32, i32)> {
+    let (conn, root) = connect_root().ok()?;
+    let tree = conn.query_tree(root).ok()?.reply().ok()?;
+    let net_wm_pid = conn
+        .intern_atom(false, b"_NET_WM_PID")
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
+    let pid = std::process::id();
+    let mut best: Option<(i32, i32, i32, i32)> = None;
+    for window in tree.children {
+        let Some(class) = window_class(&conn, window) else {
+            continue;
+        };
+        if !class
+            .windows(app_id.len())
+            .any(|chunk| chunk == app_id.as_bytes())
+        {
+            continue;
+        }
+        if let Some(owner) = window_pid(&conn, net_wm_pid, window) {
+            if owner != pid {
+                continue;
+            }
+        }
+        let mapped = conn
+            .get_window_attributes(window)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .map(|attrs| attrs.map_state == MapState::VIEWABLE)
+            .unwrap_or(false);
+        if !mapped {
+            continue;
+        }
+        let geo = conn.get_geometry(window).ok()?.reply().ok()?;
+        let origin = conn
+            .translate_coordinates(window, root, 0, 0)
+            .ok()?
+            .reply()
+            .ok()?;
+        let candidate = (
+            i32::from(origin.dst_x),
+            i32::from(origin.dst_y),
+            i32::from(geo.width),
+            i32::from(geo.height),
+        );
+        let area = candidate.2 as i64 * candidate.3 as i64;
+        let best_area = best.map(|b| b.2 as i64 * b.3 as i64).unwrap_or(-1);
+        if area > best_area {
+            best = Some(candidate);
+        }
+    }
+    best
+}
+
+/// The X id of this process's popup window — the same WM_CLASS/`_NET_WM_PID`
+/// match as [`popup_geometry`], plus `_NET_WM_PID`-checked same-class
+/// non-mapped windows, so it resolves even before the first show. Size filter
+/// is skipped; among same-process windows the popup (720×960) is the largest
+/// surface, which keeps the Settings/Wizard windows from matching.
+pub fn popup_window_id(app_id: &str) -> Option<u32> {
+    let (conn, root) = connect_root().ok()?;
+    let tree = conn.query_tree(root).ok()?.reply().ok()?;
+    let net_wm_pid = conn
+        .intern_atom(false, b"_NET_WM_PID")
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
+    let pid = std::process::id();
+    let mut best: Option<(u32, i64)> = None;
+    for window in tree.children {
+        let Some(class) = window_class(&conn, window) else {
+            continue;
+        };
+        if !class
+            .windows(app_id.len())
+            .any(|chunk| chunk == app_id.as_bytes())
+        {
+            continue;
+        }
+        if let Some(owner) = window_pid(&conn, net_wm_pid, window) {
+            if owner != pid {
+                continue;
+            }
+        }
+        let area = conn
+            .get_geometry(window)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .map(|geo| geo.width as i64 * geo.height as i64)
+            .unwrap_or(1);
+        let best_area = best.map(|b| b.1).unwrap_or(-1);
+        if area > best_area {
+            best = Some((window, area));
+        }
+    }
+    best.map(|b| b.0)
+}
+
 /// Find this process's popup window among the root's top-level windows.
 ///
-/// Matched by: viewable (actually on screen), WM_CLASS containing the app id,
+/// Matched by: WM_CLASS containing the app id,
 /// `_NET_WM_PID` equal to this process when the property exists, and physical
 /// size within [`SIZE_TOLERANCE`] of the expected popup size. The size check is
 /// what keeps the Settings window (same pid, same class, different size) out.
+/// `mapped_only` additionally requires `MapState::VIEWABLE` (used only by the
+/// drag path — a drag on an invisible window is nonsense; move/map/unmap must
+/// also work on unmapped windows).
 fn locate_popup_window(
     conn: &RustConnection,
     root: u32,
     app_id: &str,
     pid: u32,
     expected: (i32, i32),
+    mapped_only: bool,
 ) -> Result<u32, String> {
     let tree = conn
         .query_tree(root)
@@ -263,7 +463,7 @@ fn locate_popup_window(
             }
         }
         let Some(attrs) = attrs else { continue };
-        if attrs.map_state != MapState::VIEWABLE {
+        if mapped_only && attrs.map_state != MapState::VIEWABLE {
             continue;
         }
         let Some(geo) = geo else { continue };

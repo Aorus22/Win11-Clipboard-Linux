@@ -20,6 +20,7 @@ use gpui::{
 
 mod app_state;
 mod backend;
+mod click_watch;
 mod drag_log;
 mod geometry;
 mod gnome_shortcut;
@@ -56,6 +57,59 @@ const SETTINGS_W: f32 = 480.0;
 const SETTINGS_H: f32 = 520.0;
 const SETUP_W: f32 = 550.0;
 const SETUP_H: f32 = 650.0;
+
+/// Offscreen origin where the persistent popup is created while "hidden".
+/// Best effort only: the WM may clamp it onscreen, which is why hiding also
+/// unmaps the window (see `window_drag::set_popup_mapped`).
+const PARKED_POS: (f32, f32) = (-10000.0, -10000.0);
+
+/// Physical X-window size of the popup (bounds x scale factor — see the drag
+/// path for why `viewport_size()` can't be used on HiDPI).
+fn popup_physical_size(
+    handle: &WindowHandle<Popup>,
+    cx: &mut gpui::AsyncApp,
+) -> Option<(f32, f32)> {
+    handle
+        .update(cx, |_, window, _| {
+            let scale = window.scale_factor();
+            let bounds = window.bounds().size;
+            (
+                bounds.width.to_f64() as f32 * scale,
+                bounds.height.to_f64() as f32 * scale,
+            )
+        })
+        .ok()
+}
+
+/// Move the persistent popup's X11 window (show → cursor-follow position,
+/// hide → [`PARKED_POS`]) without touching the GPUI window itself.
+///
+/// gpui 0.2.2 exposes no per-window move/hide, so this goes straight to the
+/// server like the client-side drag does. Logs and continues on failure
+/// (native Wayland has no X window to configure).
+fn place_popup(handle: &WindowHandle<Popup>, cx: &mut gpui::AsyncApp, x: i32, y: i32) {
+    match popup_physical_size(handle, cx) {
+        Some(size) => {
+            if let Err(e) = window_drag::move_popup_to(APP_ID, size, x, y) {
+                eprintln!("[gpui-app] move popup failed: {e}");
+            }
+        }
+        None => eprintln!("[gpui-app] popup gone while moving"),
+    }
+}
+
+/// Hide the persistent popup: unmap its X11 window and hand focus back.
+/// Unmapping (not offscreen parking) is what actually removes a managed
+/// window from the screen.
+fn hide_popup_window(handle: &WindowHandle<Popup>, cx: &mut gpui::AsyncApp) {
+    if let Some(size) = popup_physical_size(handle, cx) {
+        if let Err(e) = window_drag::set_popup_mapped(APP_ID, size, false) {
+            eprintln!("[gpui-app] unmap popup failed: {e}");
+        }
+    }
+    let _ = focus_manager::restore_focused_window();
+    focus_manager::note_popup_window(None);
+}
 
 struct GpuiAssets {
     base: PathBuf,
@@ -221,11 +275,21 @@ fn open_popup_window(
     shared: &Shared,
     scale: f32,
     initial_tab: Tab,
+    start_hidden: bool,
 ) -> WindowHandle<Popup> {
-    // Fresh position on every show (follow-mouse parity) + fresh state.
-    focus_manager::save_focused_window();
+    // Persistent-window model: the popup is created once and parked offscreen
+    // ("hidden"); showing only moves it to the cursor, refreshes content and
+    // activates it — no window construction on the toggle path, so Super+V
+    // feels instant. `start_hidden` skips activation/focus so a background
+    // start never steals focus.
     let (w, h) = (POPUP_W * scale, POPUP_H * scale);
-    let origin = initial_origin(cx, w as i32, h as i32);
+    let origin = if start_hidden {
+        PARKED_POS
+    } else {
+        // Fresh position on every show (follow-mouse parity) + fresh state.
+        focus_manager::save_focused_window();
+        initial_origin(cx, w as i32, h as i32)
+    };
     let handle = cx
         .open_window(popup_options(origin, w, h), {
             let backend = Arc::clone(backend);
@@ -254,6 +318,44 @@ fn open_popup_window(
             }
         })
         .expect("failed to open GPUI popup window");
+    if start_hidden {
+        // Parked: only arm focus-loss dismissal, take neither focus nor
+        // activation until the first real show — then withdraw immediately:
+        // creation maps the window and the WM may clamp the parked origin
+        // onscreen. Retry briefly; the X window may not be visible to our
+        // own connection yet.
+        let _ = handle.update(cx, |popup, window, cx| {
+            popup.watch_activation(window, cx);
+            cx.notify();
+        });
+        let size = handle.update(cx, |_, window, _| {
+            let scale = window.scale_factor();
+            let bounds = window.bounds().size;
+            (
+                bounds.width.to_f64() as f32 * scale,
+                bounds.height.to_f64() as f32 * scale,
+            )
+        });
+        if let Ok(size) = size {
+            let mut last_err = String::new();
+            for _ in 0..20 {
+                match window_drag::set_popup_mapped(APP_ID, size, false) {
+                    Ok(()) => {
+                        last_err.clear();
+                        break;
+                    }
+                    Err(e) => {
+                        last_err = e;
+                        std::thread::sleep(Duration::from_millis(25));
+                    }
+                }
+            }
+            if !last_err.is_empty() {
+                eprintln!("[gpui-app] initial unmap failed: {last_err}");
+            }
+        }
+        return handle;
+    }
     let _ = handle.update(cx, |popup, window, cx| {
         // gpui's X11 backend ignores `WindowOptions.focus`, so ask the window
         // manager directly: an unfocused popup receives no keystrokes (search
@@ -426,7 +528,6 @@ fn main() {
     };
 
     let settings = settings::load();
-    let scale = settings.ui_scale;
     let backend = BackendService::new(&settings);
     let shared = app_state::shared(settings);
 
@@ -446,6 +547,10 @@ fn main() {
         InstanceRole::Primary => {}
     }
     theme_watch::spawn_theme_watcher(sig_tx);
+    // Physical outside-click dismissal (evdev). Independent of focus, so it
+    // keeps working on focus-follows-mouse desktops where focus-loss alone
+    // cannot tell a hover from a click.
+    click_watch::spawn_click_watcher(shared.clone());
 
     // GTK must initialize on the main thread before the AppIndicator tray backend.
     let mut tray = match gtk::init() {
@@ -470,11 +575,13 @@ fn main() {
         .run(move |cx: &mut App| {
             // Resident holder first: the app must survive with zero visible windows.
             open_holder_window(cx);
-            let mut popup = if !want_setup && !background {
-                Some(open_popup_window(cx, &backend, &shared, scale, initial_tab))
-            } else {
-                None
-            };
+            // Persistent popup: created lazily on first toggle (or immediately
+            // below when starting visible) and never destroyed afterwards —
+            // show/hide only parks the X window offscreen.
+            let mut popup: Option<WindowHandle<Popup>> = None;
+            let mut popup_visible = false;
+            let mut popup_scale: Option<f32> = None;
+            let show_at_start = !want_setup && !background;
             if want_setup {
                 open_wizard_window(cx, &backend, &shared);
             } else if want_settings {
@@ -488,6 +595,10 @@ fn main() {
             let mut last_theme_dark: Option<bool> = None;
 
             cx.spawn(async move |cx| {
+                // Visible start (non-background launch) reuses the exact toggle
+                // path once: create parked, then show (with the smoke-test tab
+                // when GPUI_SMOKE_TAB requests one).
+                let mut pending_show_tab: Option<Tab> = show_at_start.then_some(initial_tab);
                 loop {
                     // Short fixed cadence (was 300 ms): keeps toggle latency
                     // low and tray clicks / X11 hotkeys / backend refresh
@@ -520,6 +631,11 @@ fn main() {
                     }
                     // 2. Collect signals: instance IPC, tray, hotkeys.
                     let mut signals: Vec<AppSignal> = Vec::new();
+                    let mut show_tab = Tab::Clipboard;
+                    if let Some(tab) = pending_show_tab.take() {
+                        show_tab = tab;
+                        signals.push(AppSignal::Toggle);
+                    }
                     while let Ok(s) = sig_rx.try_recv() {
                         signals.push(s);
                     }
@@ -530,37 +646,109 @@ fn main() {
                     if let Some(hk) = hotkeys.as_ref() {
                         signals.extend(hk.poll());
                     }
+                    // 2b. Hide requests from the popup view (focus loss, Escape,
+                    // paste, close button): park the persistent window instead
+                    // of destroying it.
+                    let hide_requested = std::mem::replace(
+                        &mut shared.lock().hide_popup_requested,
+                        false,
+                    );
+                    if hide_requested && popup_visible {
+                        if let Some(h) = popup.as_ref() {
+                            hide_popup_window(h, cx);
+                        }
+                        popup_visible = false;
+                    }
                     // 3. Act.
                     for signal in signals {
                         match signal {
                             AppSignal::Toggle => {
-                                // `update` fails when the window already went
-                                // away — the popup dismisses itself on focus
-                                // loss — and then the toggle must reopen, not be
-                                // swallowed by the stale handle.
-                                let closed = match popup.take() {
-                                    Some(h) => h
-                                        .update(cx, |_, window, _| {
+                                let st = shared.lock().settings.clone();
+                                // ui_scale changed since the window was built:
+                                // rebuild once (rare), otherwise reuse.
+                                if popup_scale != Some(st.ui_scale) {
+                                    if let Some(h) = popup.take() {
+                                        let _ = h.update(cx, |_, window, _| {
                                             window.remove_window();
-                                        })
-                                        .is_ok(),
-                                    None => false,
-                                };
-                                if !closed {
-                                    let st = shared.lock().settings.clone();
-                                    match cx.update(|cx| {
-                                        open_popup_window(
-                                            cx,
-                                            &backend,
-                                            &shared,
-                                            st.ui_scale,
-                                            Tab::Clipboard,
-                                        )
-                                    }) {
-                                        Ok(h) => popup = Some(h),
-                                        Err(e) => {
-                                            eprintln!("[gpui-app] reopen failed: {e:?}")
+                                        });
+                                    }
+                                    popup_visible = false;
+                                    popup_scale = None;
+                                }
+                                if popup_visible {
+                                    if let Some(h) = popup.as_ref() {
+                                        hide_popup_window(h, cx);
+                                    }
+                                    popup_visible = false;
+                                } else {
+                                    if popup.is_none() {
+                                        match cx.update(|cx| {
+                                            open_popup_window(
+                                                cx,
+                                                &backend,
+                                                &shared,
+                                                st.ui_scale,
+                                                Tab::Clipboard,
+                                                true,
+                                            )
+                                        }) {
+                                            Ok(h) => {
+                                            popup = Some(h);
+                                            popup_scale = Some(st.ui_scale);
+                                            focus_manager::note_popup_window(
+                                                window_drag::popup_window_id(APP_ID),
+                                            );
                                         }
+                                            Err(e) => {
+                                                eprintln!("[gpui-app] popup open failed: {e:?}")
+                                            }
+                                        }
+                                    }
+                                    if let Some(h) = popup.as_ref() {
+                                        // Show: fresh cursor-follow position,
+                                        // fresh content + appear animation,
+                                        // then take focus.
+                                        focus_manager::note_popup_window(
+                                            window_drag::popup_window_id(APP_ID),
+                                        );
+                                        focus_manager::save_focused_window();
+                                        let (w, h_) = (
+                                            POPUP_W * st.ui_scale,
+                                            POPUP_H * st.ui_scale,
+                                        );
+                                        let origin = cx.update(|cx| {
+                                            initial_origin(cx, w as i32, h_ as i32)
+                                        });
+                                        match origin {
+                                            Ok((x, y)) => {
+                                                // Move first (invisible), then
+                                                // map: no onscreen jump.
+                                                place_popup(h, cx, x as i32, y as i32);
+                                                if let Some(size) =
+                                                    popup_physical_size(h, cx)
+                                                {
+                                                    if let Err(e) =
+                                                        window_drag::set_popup_mapped(
+                                                            APP_ID, size, true,
+                                                        )
+                                                    {
+                                                        eprintln!(
+                                                            "[gpui-app] map popup failed: {e}"
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => eprintln!(
+                                                "[gpui-app] origin failed: {e:?}"
+                                            ),
+                                        }
+                                        let _ = h.update(cx, |popup, window, cx| {
+                                            popup.prepare_for_show(show_tab, cx);
+                                            window.activate_window();
+                                            popup.focus.focus(window);
+                                            cx.notify();
+                                        });
+                                        popup_visible = true;
                                     }
                                 }
                             }
@@ -603,6 +791,9 @@ fn main() {
                             }
                         }
                     }
+                    // Publish visibility for background threads (the evdev
+                    // outside-click watcher gates on it).
+                    shared.lock().popup_visible = popup_visible;
                 }
             })
             .detach();

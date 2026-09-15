@@ -23,6 +23,24 @@ pub struct SharedConfig {
     /// Set by the wizard on completion when no popup is open; the main poll
     /// loop opens the popup window and clears it.
     pub open_popup_requested: bool,
+    /// Set by the popup view instead of destroying its window (the window is
+    /// persistent and parked offscreen); the main poll loop hides it and
+    /// clears the flag.
+    pub hide_popup_requested: bool,
+    /// Mirrors the main loop's popup visibility so background threads (the
+    /// evdev outside-click watcher) can gate their work on it.
+    pub popup_visible: bool,
+    /// Monotonic count of the pointer presses the popup window itself handled,
+    /// plus the time of the last one.
+    ///
+    /// The evdev watcher must never ask X where the pointer is: on a Wayland
+    /// session the X pointer is frozen while the real pointer sits over a
+    /// Wayland-native window, so it keeps pointing at the last X surface it
+    /// was on — the popup — and every outside click would look like an inside
+    /// one. Whether a press landed inside is therefore answered by whether the
+    /// popup received that press (see `click_watch`).
+    pub popup_pointer_down_seq: u64,
+    pub popup_last_pointer_down: Option<std::time::Instant>,
 }
 
 pub type Shared = Arc<Mutex<SharedConfig>>;
@@ -33,6 +51,10 @@ pub fn shared(settings: AppSettings) -> Shared {
         version: 1,
         open_wizard_requested: false,
         open_popup_requested: false,
+        hide_popup_requested: false,
+        popup_visible: false,
+        popup_pointer_down_seq: 0,
+        popup_last_pointer_down: None,
     }))
 }
 

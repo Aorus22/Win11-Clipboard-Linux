@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 use x11rb::connection::Connection;
-use x11rb::protocol::xproto::{Atom, ConnectionExt, InputFocus};
+use x11rb::protocol::xproto::{Atom, AtomEnum, ConnectionExt, InputFocus};
 use x11rb::rust_connection::RustConnection;
 
 /// Polling interval for all waiters. X11 round trips are local and cheap.
@@ -59,6 +59,39 @@ impl X11Context {
             .reply()
             .map_err(|error| format!("Failed to query X11 focus: {}", error))
             .map(|reply| reply.focus)
+    }
+
+    /// Whether `id` is still a live top-level client window (present in the
+    /// root's children). Used by focus saves to reject ids the X server kept
+    /// reporting for windows that are gone (dead client or unmapped trap).
+    fn window_is_live(&self, id: u32) -> Result<bool, String> {
+        let root = self
+            .connection
+            .setup()
+            .roots
+            .first()
+            .map(|root| root.root)
+            .ok_or_else(|| "No X11 screen available".to_string())?;
+        let tree = self
+            .connection
+            .query_tree(root)
+            .map_err(|error| format!("query_tree error: {error}"))?
+            .reply()
+            .map_err(|error| format!("query_tree reply: {error}"))?;
+        Ok(tree.children.contains(&id))
+    }
+
+    /// Whether `id` carries a non-empty WM_CLASS — under GNOME/XWayland the
+    /// X server may report input focus on WM-internal "shadow" windows that
+    /// have no client identity; those are useless as paste targets.
+    fn window_has_wm_class(&self, id: u32) -> Result<bool, String> {
+        let reply = self
+            .connection
+            .get_property(false, id, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 256)
+            .map_err(|error| format!("WM_CLASS query failed: {error}"))?
+            .reply()
+            .map_err(|error| format!("WM_CLASS reply: {error}"))?;
+        Ok(reply.value_len > 0)
     }
 }
 
@@ -118,6 +151,18 @@ pub fn clipboard_owner() -> Option<u32> {
 /// Returns the window that currently has X11 input focus.
 pub fn focused_window() -> Option<u32> {
     with_x11_context(|context| context.focused_window()).ok()
+}
+
+/// Whether `id` is still a live top-level client window on X11.
+/// Outside X11 (or on any query failure) returns `false` so callers treat the
+/// id as unknown and follow their stale-target policy.
+pub fn window_is_live(id: u32) -> bool {
+    id != 0 && with_x11_context(|context| context.window_is_live(id)).unwrap_or(false)
+}
+
+/// Whether `id` carries a non-empty WM_CLASS (a real application window).
+pub fn window_has_wm_class(id: u32) -> bool {
+    id != 0 && with_x11_context(|context| context.window_has_wm_class(id)).unwrap_or(false)
 }
 
 /// Requests focus for `target_window` and waits until it is observed in two
