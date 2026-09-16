@@ -56,6 +56,11 @@ pub struct AppSettings {
     /// click watcher.
     #[serde(default = "default_true")]
     pub close_on_focus_loss: bool,
+    /// Manual override for the transparency safety gate (NVIDIA/AppImage):
+    /// when true the backdrop-opacity sliders stay adjustable even where
+    /// rendering artefacts are possible. Default off (safe).
+    #[serde(default)]
+    pub allow_transparency: bool,
 }
 
 fn default_theme_mode() -> String {
@@ -92,6 +97,7 @@ impl Default for AppSettings {
             custom_kaomojis: Vec::new(),
             ui_scale: default_ui_scale(),
             close_on_focus_loss: true,
+            allow_transparency: false,
         }
     }
 }
@@ -249,5 +255,16 @@ mod tests {
     fn config_dir_is_separate_from_tauri() {
         assert!(config_dir().ends_with(CONFIG_DIR_NAME));
         assert_ne!(CONFIG_DIR_NAME, "win11-clipboard-history");
+    }
+
+    #[test]
+    fn transparency_override_defaults_off_and_old_files_parse() {
+        let s = AppSettings::default();
+        assert!(!s.allow_transparency);
+        // Config files written before the field existed must still load.
+        let old: AppSettings = serde_json::from_str(r#"{"theme_mode":"dark"}"#)
+            .expect("old settings parse");
+        assert!(!old.allow_transparency);
+        assert_eq!(old.theme_mode, "dark");
     }
 }

@@ -7,7 +7,10 @@
 
 use std::sync::Arc;
 
-use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, Render, Window, div, prelude::*, px};
+use gpui::{
+    Context, FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseMoveEvent, MouseUpEvent,
+    Render, Window, div, prelude::*, px,
+};
 use serde::{Deserialize, Serialize};
 
 use super::controls::{SliderId, TextField, slider, switch};
@@ -145,10 +148,17 @@ impl SettingsState {
             "polish" => s.enable_ui_polish = !s.enable_ui_polish,
             "tray" => s.enable_dynamic_tray_icon = !s.enable_dynamic_tray_icon,
             "focus" => s.close_on_focus_loss = !s.close_on_focus_loss,
+            "transparency" => s.allow_transparency = !s.allow_transparency,
             _ => {}
         });
         self.commit();
         cx.notify();
+    }
+
+    /// Whether the opacity sliders are locked: the environment gate applies
+    /// and the user has not manually overridden it.
+    fn transparency_locked(&self) -> bool {
+        self.transparency_disabled && !self.settings().allow_transparency
     }
 
     fn opacity_live(&mut self, dark: bool, value: f32, cx: &mut Context<Self>) {
@@ -183,7 +193,7 @@ impl SettingsState {
             SliderId::LightOpacity => (0.0, 1.0, 0.01, Some(false)),
             SliderId::UiScale => (0.5, 2.0, 0.1, None),
         };
-        if self.transparency_disabled && dark.is_some() {
+        if self.transparency_locked() && dark.is_some() {
             return;
         }
         let current = match id {
@@ -418,6 +428,7 @@ impl Render for SettingsState {
         let client_chrome = titlebar::needs_client_chrome(window);
         div()
             .id("settings-root")
+            .relative()
             .flex()
             .flex_col()
             .size_full()
@@ -460,7 +471,72 @@ impl Render for SettingsState {
                     .child(self.render_shortcuts(is_dark, cx))
                     .child(self.render_reset(is_dark, cx)),
             )
-            .child(self.render_footer(is_dark, window, cx))
+            .children(self.dragging.map(|id| {
+                // Window-covering capture layer while a slider is dragged:
+                // the slider element is only 16px tall, so a drag that
+                // drifts off it would otherwise freeze (moves stop) and
+                // never save (missed mouse-up). Forwards moves to the
+                // active slider and commits on release anywhere.
+                let (min, max, step) = match id {
+                    SliderId::DarkOpacity | SliderId::LightOpacity => (0.0, 1.0, 0.01),
+                    SliderId::UiScale => (0.5, 2.0, 0.1),
+                };
+                div()
+                    .id("slider-drag-capture")
+                    .absolute()
+                    .top(px(0.))
+                    .left(px(0.))
+                    .right(px(0.))
+                    .bottom(px(0.))
+                    .on_mouse_move(cx.listener(
+                        move |this, event: &MouseMoveEvent, window, cx| {
+                            if this.dragging != Some(id) {
+                                return;
+                            }
+                            let w = f32::from(window.bounds().size.width);
+                            let v = super::controls::slider_value_from_x(
+                                f32::from(event.position.x),
+                                w,
+                                min,
+                                max,
+                                step,
+                            );
+                            match id {
+                                SliderId::DarkOpacity => this.opacity_live(true, v, cx),
+                                SliderId::LightOpacity => this.opacity_live(false, v, cx),
+                                SliderId::UiScale => this.uiscale_live(v, cx),
+                            }
+                            cx.notify();
+                        },
+                    ))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                            if this.dragging == Some(id) {
+                                this.dragging = None;
+                                match id {
+                                    SliderId::UiScale => this.uiscale_commit(cx),
+                                    _ => this.opacity_commit(cx),
+                                }
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                            if this.dragging == Some(id) {
+                                this.dragging = None;
+                                match id {
+                                    SliderId::UiScale => this.uiscale_commit(cx),
+                                    _ => this.opacity_commit(cx),
+                                }
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .into_any_element()
+            }))
     }
 }
 
@@ -1019,7 +1095,8 @@ impl SettingsState {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let dimmed = self.transparency_disabled;
+        let locked = self.transparency_locked();
+        let overridden = settings.allow_transparency;
         let reason = self.transparency_reason.clone();
         let dark_val = settings.dark_background_opacity;
         let light_val = settings.light_background_opacity;
@@ -1030,9 +1107,9 @@ impl SettingsState {
             div()
                 .flex()
                 .flex_col()
-                .opacity(if dimmed { 0.6 } else { 1.0 })
+                .opacity(if locked { 0.6 } else { 1.0 })
                 .child(self.section_title(is_dark, "Window Transparency", "Control the backdrop opacity intensity"))
-                .children(dimmed.then(|| {
+                .children(self.transparency_disabled.then(|| {
                     div()
                         .mx(px(24.))
                         .mt(px(24.))
@@ -1062,9 +1139,27 @@ impl SettingsState {
                                         .text_size(px(11.))
                                         .mt(px(4.))
                                         .opacity(0.8)
-                                        .child("Transparency and rounded window corners have been automatically disabled to prevent rendering artefacts."),
+                                        .child(if overridden {
+                                            "You manually enabled transparency — turn it back off if you see rendering artefacts."
+                                        } else {
+                                            "Transparency and rounded window corners have been automatically disabled to prevent rendering artefacts."
+                                        }),
                                 ),
                         )
+                }))
+                .children(self.transparency_disabled.then(|| {
+                    div()
+                        .px(px(24.))
+                        .pt(px(16.))
+                        .child(self.toggle_row(
+                            ("switch", 5),
+                            "Allow transparency",
+                            "Override the safety gate and make opacity adjustable. May cause rendering artefacts on this setup.",
+                            overridden,
+                            "transparency",
+                            is_dark,
+                            cx,
+                        ))
                 }))
                 .child(
                     div()
@@ -1073,12 +1168,12 @@ impl SettingsState {
                         .flex_col()
                         .gap(px(32.))
                         .child(self.opacity_row(
-                            true, "Dark Mode Opacity", if dimmed { "100%".to_string() } else { dark_pct },
-                            dark_val, dimmed, is_dark, window, cx,
+                            true, "Dark Mode Opacity", if locked { "100%".to_string() } else { dark_pct },
+                            dark_val, locked, is_dark, window, cx,
                         ))
                         .child(self.opacity_row(
-                            false, "Light Mode Opacity", if dimmed { "100%".to_string() } else { light_pct },
-                            light_val, dimmed, is_dark, window, cx,
+                            false, "Light Mode Opacity", if locked { "100%".to_string() } else { light_pct },
+                            light_val, locked, is_dark, window, cx,
                         )),
                 )
                 .into_any_element(),
@@ -1659,44 +1754,6 @@ impl SettingsState {
                     }))
                     .child(icon(icons::RESET, px(16.)).flex_shrink_0())
                     .child("Reset to defaults"),
-            )
-            .into_any_element()
-    }
-
-    fn render_footer(&self, is_dark: bool, window: &Window, cx: &mut Context<Self>) -> gpui::AnyElement {
-        div()
-            .px(px(32.))
-            .py(px(20.))
-            .border_t_1()
-            .border_color(if is_dark {
-                theme::white_pct(0.05)
-            } else {
-                theme::gray::g200()
-            })
-            .bg(if is_dark {
-                gpui::rgba(0x2d2d2d80)
-            } else {
-                theme::gray::g100()
-            })
-            .flex()
-            .flex_row()
-            .justify_end()
-            .flex_shrink_0()
-            .child(
-                div()
-                    .id("settings-done")
-                    .px(px(32.))
-                    .py(px(10.))
-                    .rounded(px(8.))
-                    .bg(theme::accent())
-                    .text_color(gpui::rgb(0xffffff))
-                    .text_size(px(12.25))
-                    .cursor_pointer()
-                    .hover(|s| s.opacity(0.9))
-                    .on_click(cx.listener(|this, _, window, _| {
-                        this.close(window);
-                    }))
-                    .child("Done"),
             )
             .into_any_element()
     }

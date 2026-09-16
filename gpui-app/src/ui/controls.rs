@@ -98,6 +98,25 @@ pub fn slider(
     let knob_x = frac * slider_track_w(win_w);
     // Shared by the down + move handlers (each `move` closure needs its own handle).
     let on_change = std::sync::Arc::new(on_change);
+    let on_commit: std::sync::Arc<
+        dyn Fn(&mut SettingsState, &mut Context<SettingsState>) + 'static,
+    > = std::sync::Arc::new(on_commit);
+    // Commits on release anywhere inside the window: GPUI only delivers
+    // on_mouse_up while hovering this element's hitbox, and a drag that ends
+    // off the thin track would otherwise never save (same class of bug as
+    // the popup scrollbar had). The window-covering capture layer in the
+    // settings root covers drifts further out; both paths are guarded by
+    // `dragging` so only the first one commits.
+    let commit_drag = {
+        let on_commit = std::sync::Arc::clone(&on_commit);
+        move |this: &mut SettingsState, cx: &mut Context<SettingsState>| {
+            if this.dragging == Some(id) {
+                this.dragging = None;
+                on_commit(this, cx);
+                cx.notify();
+            }
+        }
+    };
     let track_bg = if is_dark {
         gpui::rgb(0x374151)
     } else {
@@ -150,13 +169,14 @@ pub fn slider(
         }))
         .on_mouse_up(
             MouseButton::Left,
-            cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                if this.dragging == Some(id) {
-                    this.dragging = None;
-                    on_commit(this, cx);
-                    cx.notify();
-                }
+            cx.listener({
+                let commit_drag = commit_drag.clone();
+                move |this, _: &MouseUpEvent, _, cx| commit_drag(this, cx)
             }),
+        )
+        .on_mouse_up_out(
+            MouseButton::Left,
+            cx.listener(move |this, _: &MouseUpEvent, _, cx| commit_drag(this, cx)),
         )
         .child(
             div()
