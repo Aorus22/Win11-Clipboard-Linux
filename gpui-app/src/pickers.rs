@@ -32,6 +32,10 @@ use std::sync::OnceLock;
 /// this family.
 pub const EMOJI_FONT_FAMILY: &str = "ClipboardEmoji";
 
+/// Pseudo-category selecting only recently used emoji (the "Recent" pill).
+/// Never assigned by detect_category; matched explicitly when filtering.
+pub const RECENT_CATEGORY: &str = "Recent";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Emoji {
     pub char: String,

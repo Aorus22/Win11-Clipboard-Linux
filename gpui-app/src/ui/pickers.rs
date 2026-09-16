@@ -363,45 +363,12 @@ fn render_emoji(state: &Popup, window: &Window, cx: &mut Context<Popup>) -> gpui
         .render_for(SearchWhich::Emoji, "Search emojis...", is_dark, secondary, window, cx)
         .into_any_element();
 
-    // Recent strip (hidden while searching) + categories.
-    let recent = state.backend.recent_emojis();
-    let all = crate::pickers::load_emojis();
-    let map: std::collections::HashMap<&str, &Emoji> =
-        all.iter().map(|e| (e.char.as_str(), e)).collect();
-    let recent_full: Vec<Emoji> = recent
-        .iter()
-        .filter_map(|r| map.get(r.char.as_str()).map(|e| (*e).clone()))
-        .take(16)
-        .collect();
+    // Recents live behind the "Recent" pill (hidden while searching).
+    let has_recents = !state.backend.recent_emojis().is_empty();
 
     let mut sub_children: Vec<gpui::AnyElement> = Vec::new();
-    if !searching && !recent_full.is_empty() {
-        sub_children.push(section_label(is_dark, icons::CLOCK, "Recently used"));
-        sub_children.push(render_glyph_rows(
-            state,
-            "recent-emoji",
-            &recent_full.iter().collect::<Vec<_>>(),
-            8,
-            32.0,
-            24.0,
-            state.emoji.focused_recent,
-            {
-                move |this, emoji: &Emoji, window, cx| {
-                    let ch = emoji.char.clone();
-                    this.paste_emoji(&ch, window, cx);
-                }
-            },
-            {
-                move |this, emoji: Option<&Emoji>, _cx| {
-                    this.emoji.hovered =
-                        emoji.map(|e| (e.char.clone(), e.name.clone()));
-                }
-            },
-            cx,
-        ));
-    }
     if !searching {
-        sub_children.push(render_emoji_categories(state, cx));
+        sub_children.push(render_emoji_categories(state, has_recents, cx));
     }
     let sub = if sub_children.is_empty() {
         None
@@ -422,7 +389,11 @@ fn render_emoji(state: &Popup, window: &Window, cx: &mut Context<Popup>) -> gpui
     chrome(state, header, sub, grid, footer)
 }
 
-fn render_emoji_categories(state: &Popup, cx: &mut Context<Popup>) -> gpui::AnyElement {
+fn render_emoji_categories(
+    state: &Popup,
+    has_recents: bool,
+    cx: &mut Context<Popup>,
+) -> gpui::AnyElement {
     // Categories computed fresh (cheap: sorts ≤10 names).
     let cats = crate::pickers::emoji_categories();
     // Leak-free: pass owned Strings via a 'static slice trick — instead rebuild pills inline.
@@ -444,13 +415,33 @@ fn render_emoji_categories(state: &Popup, cx: &mut Context<Popup>) -> gpui::AnyE
         },
         cx,
     )];
+    // "Recent" pseudo-category right after All (only when recents exist).
+    let mut next_idx = 1;
+    if has_recents {
+        pills.push(pill(
+            "emoji-cat",
+            next_idx,
+            crate::pickers::RECENT_CATEGORY.to_string(),
+            selected.as_deref() == Some(crate::pickers::RECENT_CATEGORY),
+            is_dark,
+            tertiary,
+            |this, _, _, cx| {
+                this.emoji.category = Some(crate::pickers::RECENT_CATEGORY.to_string());
+                this.emoji.focused_main = 0;
+                this.emoji.focused_category = 0;
+                cx.notify();
+            },
+            cx,
+        ));
+        next_idx += 1;
+    }
     for (i, cat) in cats.iter().enumerate() {
         let cat = cat.clone();
         let active = selected.as_deref() == Some(cat.as_str());
         let label = cat.clone();
         pills.push(pill(
             "emoji-cat",
-            i + 1,
+            next_idx + i,
             label,
             active,
             is_dark,

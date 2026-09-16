@@ -399,21 +399,25 @@ impl Popup {
             return crate::pickers::search_emojis(&q, 100);
         }
         let all = crate::pickers::load_emojis();
-        if let Some(cat) = &self.emoji.category {
-            return all.into_iter().filter(|e| &e.category == cat).collect();
-        }
         let recent = self.backend.recent_emojis();
-        if recent.is_empty() {
-            return all;
-        }
         let map: std::collections::HashMap<&str, &Emoji> =
             all.iter().map(|e| (e.char.as_str(), e)).collect();
-        let mut out: Vec<Emoji> = recent
+        let recents: Vec<Emoji> = recent
             .iter()
             .filter_map(|r| map.get(r.char.as_str()).map(|e| (*e).clone()))
             .collect();
+        if self.emoji.category.as_deref() == Some(crate::pickers::RECENT_CATEGORY) {
+            return recents;
+        }
+        if let Some(cat) = &self.emoji.category {
+            return all.into_iter().filter(|e| &e.category == cat).collect();
+        }
+        if recents.is_empty() {
+            return all;
+        }
         let recent_chars: std::collections::HashSet<String> =
-            out.iter().map(|e| e.char.clone()).collect();
+            recents.iter().map(|e| e.char.clone()).collect();
+        let mut out = recents;
         out.extend(all.into_iter().filter(|e| !recent_chars.contains(&e.char)));
         out
     }
