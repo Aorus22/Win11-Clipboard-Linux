@@ -588,6 +588,12 @@ fn render_emoji_grid_virtual(
     let cols = grid_columns(window).max(1);
     let row_count = items.len().div_ceil(cols);
     let focused = state.emoji.focused_main;
+    // uniform_list lays items out via layout_as_root, and roots shrink-wrap
+    // to content — the list's Definite width never reaches the row. Pin both
+    // the list and each row to the real content width (window minus the
+    // outer 12px padding) so the flex_1 cells actually share it, matching
+    // React (`columnWidth = innerWidth / columnCount`).
+    let content_w = (win_w(window) - 24.0).max(40.0);
     let is_dark = state.is_dark;
     let hover = hover_bg(is_dark);
     let accent = theme::accent();
@@ -631,7 +637,7 @@ fn render_emoji_grid_virtual(
                         cells.push(
                             div()
                                 .id(("v-emoji-cell", idx))
-                                .w(px(40.))
+                                .flex_1()
                                 .h(px(40.))
                                 .rounded(px(6.))
                                 .flex()
@@ -667,12 +673,24 @@ fn render_emoji_grid_virtual(
                                 .child(glyph),
                         );
                     }
-                    rows.push(div().flex().flex_row().h(px(40.)).children(cells));
+                    // Pad partial rows with spacers so every cell keeps a
+                    // single width. One shared id prefix is fine — the emoji
+                    // and symbol grids never render in the same frame.
+                    for k in cells.len()..cols {
+                        cells.push(div().id(("v-grid-pad", row * cols.max(1) + k)).flex_1());
+                    }
+                    rows.push(
+                        // Definite row width (see content_w above): rows laid
+                        // out via layout_as_root shrink-wrap otherwise.
+                        div().flex().flex_row().h(px(40.)).w(px(content_w)).children(cells),
+                    );
                 }
                 rows
             })
             .flex_1()
             .min_h(px(0.))
+            // Definite list width (see content_w above).
+            .w(px(content_w))
             .track_scroll(scroll),
             repaint,
         ))
@@ -689,6 +707,9 @@ fn render_symbol_grid_virtual(
     let cols = grid_columns(window).max(1);
     let row_count = items.len().div_ceil(cols);
     let focused = state.symbol.focused_main;
+    // Same shrink-wrap as the emoji grid (see above): pin list and rows to
+    // the real content width so flex_1 cells share it.
+    let content_w = (win_w(window) - 24.0).max(40.0);
     let is_dark = state.is_dark;
     let hover = hover_bg(is_dark);
     let accent = theme::accent();
@@ -732,7 +753,7 @@ fn render_symbol_grid_virtual(
                         cells.push(
                             div()
                                 .id(("v-symbol-cell", idx))
-                                .w(px(40.))
+                                .flex_1()
                                 .h(px(40.))
                                 .rounded(px(6.))
                                 .flex()
@@ -769,12 +790,21 @@ fn render_symbol_grid_virtual(
                                 .child(glyph),
                         );
                     }
-                    rows.push(div().flex().flex_row().h(px(40.)).children(cells));
+                    // Pad partial rows with spacers so every cell keeps a
+                    // single width. One shared id prefix is fine — the emoji
+                    // and symbol grids never render in the same frame.
+                    for k in cells.len()..cols {
+                        cells.push(div().id(("v-grid-pad", row * cols.max(1) + k)).flex_1());
+                    }
+                    // Definite row width (see content_w above).
+                    rows.push(div().flex().flex_row().h(px(40.)).w(px(content_w)).children(cells));
                 }
                 rows
             })
             .flex_1()
             .min_h(px(0.))
+            // Definite list width (see content_w above).
+            .w(px(content_w))
             .track_scroll(scroll),
             repaint,
         ))

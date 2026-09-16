@@ -193,6 +193,8 @@ pub fn slider(
 pub struct TextField {
     pub text: String,
     pub cursor: usize,
+    /// Selection anchor (byte index); selection spans anchor..cursor.
+    pub sel_anchor: Option<usize>,
     pub focus: FocusHandle,
 }
 
@@ -201,6 +203,7 @@ impl TextField {
         Self {
             text: String::new(),
             cursor: 0,
+            sel_anchor: None,
             focus,
         }
     }
@@ -210,12 +213,13 @@ impl TextField {
         Self {
             text,
             cursor,
+            sel_anchor: None,
             focus,
         }
     }
 
     pub fn handle_key(&mut self, event: &KeyDownEvent) -> bool {
-        edit_text(&mut self.text, &mut self.cursor, event)
+        edit_text(&mut self.text, &mut self.cursor, &mut self.sel_anchor, event)
     }
 
     pub fn clear(&mut self) {
@@ -238,7 +242,46 @@ impl TextField {
             (theme::light::text_primary(), theme::dark::text_disabled())
         };
         let cursor = self.cursor.min(self.text.len());
-        let (before, after) = self.text.split_at(cursor);
+        let focused = self.focus.is_focused(window);
+        let selected = gpui::rgba(0x0078d44d);
+        let caret = || div().w(px(1.5)).h(px(15.)).bg(theme::accent());
+        // Selection range (sorted, non-empty), if any.
+        let selection = self.sel_anchor.and_then(|a| {
+            let (lo, hi) = (a.min(cursor), a.max(cursor));
+            (lo != hi).then_some((lo, hi))
+        });
+        let mut text_row = div()
+            .flex_1()
+            .flex()
+            .flex_row()
+            .items_center()
+            .overflow_hidden();
+        match selection {
+            Some((lo, hi)) => {
+                text_row = text_row.child(self.text[..lo].to_string());
+                if focused && cursor == lo {
+                    text_row = text_row.child(caret());
+                }
+                text_row = text_row.child(
+                    div()
+                        .bg(selected)
+                        .rounded(px(2.))
+                        .child(self.text[lo..hi].to_string()),
+                );
+                if focused && cursor == hi {
+                    text_row = text_row.child(caret());
+                }
+                text_row = text_row.child(self.text[hi..].to_string());
+            }
+            None => {
+                let (before, after) = self.text.split_at(cursor);
+                text_row = text_row.child(before.to_string());
+                if focused {
+                    text_row = text_row.child(caret());
+                }
+                text_row = text_row.child(after.to_string());
+            }
+        }
         div()
             .id(id)
             .flex_1()
@@ -263,7 +306,9 @@ impl TextField {
             .text_color(text_color)
             .track_focus(&self.focus)
             .on_click(cx.listener(move |this, _, window: &mut Window, cx| {
-                select(this).focus.focus(window);
+                let field = select(this);
+                field.focus.focus(window);
+                field.sel_anchor = None;
                 cx.notify();
             }))
             .children(self.text.is_empty().then(|| {
@@ -273,17 +318,7 @@ impl TextField {
                     .text_color(placeholder_color)
                     .child(placeholder.to_string())
             }))
-            .children((!self.text.is_empty()).then(|| {
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .overflow_hidden()
-                    .child(before.to_string())
-                    .child(div().w(px(1.5)).h(px(15.)).bg(theme::accent()))
-                    .child(after.to_string())
-            }))
+            .children((!self.text.is_empty()).then_some(text_row))
             .into_any_element()
     }
 }

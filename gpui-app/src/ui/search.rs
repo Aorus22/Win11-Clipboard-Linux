@@ -31,44 +31,66 @@ pub fn next_char_boundary(text: &str, cursor: usize) -> usize {
 }
 
 /// Shared single-line editing semantics (search fields + settings text fields):
-/// Backspace/Delete/arrows/Home/End + printable-char insertion. Returns consumed.
-pub fn edit_text(text: &mut String, cursor: &mut usize, event: &KeyDownEvent) -> bool {
+/// Backspace/Delete/arrows/Home/End + printable-char insertion, plus a
+/// minimal selection model: Ctrl+A (Cmd+A parity) selects all, Shift+arrows
+/// extend, destructive edits replace the selection. Returns consumed.
+pub fn edit_text(
+    text: &mut String,
+    cursor: &mut usize,
+    anchor: &mut Option<usize>,
+    event: &KeyDownEvent,
+) -> bool {
     *cursor = (*cursor).min(text.len());
+    if let Some(a) = anchor {
+        *a = (*a).min(text.len());
+    }
     let key = event.keystroke.key.as_str();
     let mods = &event.keystroke.modifiers;
+    // Select-all before the control-bail below.
+    if (mods.control || mods.platform) && !mods.alt && key == "a" {
+        *anchor = Some(0);
+        *cursor = text.len();
+        return true;
+    }
     if mods.control || mods.alt || mods.platform {
         return false;
     }
+    let shift = mods.shift;
     match key {
         "backspace" => {
-            if *cursor > 0 {
+            if !take_selection(text, cursor, anchor) && *cursor > 0 {
                 let prev = prev_char_boundary(text, *cursor);
                 text.drain(prev..*cursor);
                 *cursor = prev;
             }
+            *anchor = None;
             true
         }
         "delete" => {
-            if *cursor < text.len() {
+            if !take_selection(text, cursor, anchor) && *cursor < text.len() {
                 let next = next_char_boundary(text, *cursor);
                 text.drain(*cursor..next);
             }
+            *anchor = None;
             true
         }
         "left" => {
-            *cursor = prev_char_boundary(text, *cursor);
+            move_cursor(cursor, anchor, shift, prev_char_boundary(text, *cursor));
             true
         }
         "right" => {
-            *cursor = next_char_boundary(text, *cursor);
+            let next = next_char_boundary(text, *cursor);
+            // next_char_boundary steps past the end; clamp (it never
+            // returns > len, but the anchor math below needs cursor ≤ len).
+            move_cursor(cursor, anchor, shift, next.min(text.len()));
             true
         }
         "home" => {
-            *cursor = 0;
+            move_cursor(cursor, anchor, shift, 0);
             true
         }
         "end" => {
-            *cursor = text.len();
+            move_cursor(cursor, anchor, shift, text.len());
             true
         }
         _ => {
@@ -78,8 +100,10 @@ pub fn edit_text(text: &mut String, cursor: &mut usize, event: &KeyDownEvent) ->
                 .clone()
                 .unwrap_or_else(|| event.keystroke.key.clone());
             if ch.chars().count() == 1 {
+                take_selection(text, cursor, anchor);
                 text.insert_str(*cursor, &ch);
                 *cursor += ch.len();
+                *anchor = None;
                 true
             } else {
                 false
@@ -88,10 +112,42 @@ pub fn edit_text(text: &mut String, cursor: &mut usize, event: &KeyDownEvent) ->
     }
 }
 
+/// Delete the selected range, if any, leaving the cursor at its start.
+fn take_selection(text: &mut String, cursor: &mut usize, anchor: &mut Option<usize>) -> bool {
+    if let Some(a) = anchor.take() {
+        let (lo, hi) = (a.min(*cursor), a.max(*cursor));
+        if lo != hi {
+            text.drain(lo..hi);
+            *cursor = lo;
+            return true;
+        }
+    }
+    false
+}
+
+/// Move the cursor, extending the selection while Shift is held.
+fn move_cursor(cursor: &mut usize, anchor: &mut Option<usize>, shift: bool, next: usize) {
+    if shift {
+        if anchor.is_none() {
+            *anchor = Some(*cursor);
+        }
+        *cursor = next;
+        if *anchor == Some(*cursor) {
+            *anchor = None;
+        }
+    } else {
+        *cursor = next;
+        *anchor = None;
+    }
+}
+
 pub struct SearchState {
     pub text: String,
     /// Cursor as a char-boundary byte index into `text`.
     pub cursor: usize,
+    /// Selection anchor (byte index); the selection spans anchor..cursor.
+    /// `None` (or equal to cursor) means no selection.
+    pub sel_anchor: Option<usize>,
     pub focus: FocusHandle,
     pub regex_mode: bool,
 }
@@ -101,6 +157,7 @@ impl SearchState {
         Self {
             text: String::new(),
             cursor: 0,
+            sel_anchor: None,
             focus,
             regex_mode: false,
         }
@@ -109,6 +166,7 @@ impl SearchState {
     pub fn clear(&mut self) {
         self.text.clear();
         self.cursor = 0;
+        self.sel_anchor = None;
     }
 
     fn prev_boundary(&self) -> usize {
@@ -119,9 +177,17 @@ impl SearchState {
         next_char_boundary(&self.text, self.cursor)
     }
 
+    /// Selected byte range (sorted, non-empty), if any.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        let a = self.sel_anchor?;
+        let c = self.cursor.min(self.text.len());
+        let (lo, hi) = (a.min(c), a.max(c));
+        (lo != hi).then_some((lo, hi))
+    }
+
     /// Returns true if the keystroke was consumed.
     pub fn handle_key(&mut self, event: &KeyDownEvent) -> bool {
-        edit_text(&mut self.text, &mut self.cursor, event)
+        edit_text(&mut self.text, &mut self.cursor, &mut self.sel_anchor, event)
     }
 
     pub fn render(&self, is_dark: bool, opacity: f32, window: &Window, cx: &mut Context<Popup>) -> impl IntoElement {
@@ -166,37 +232,72 @@ impl SearchState {
             // The magnifier inherits this from the bar (icons take the color of
             // their container — see `icons::icon`).
             .text_color(dim)
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.search.focus.focus(window);
+            .on_click(cx.listener(move |this, _, window, cx| {
+                // Focus THIS field (not always the clipboard one) and drop
+                // any selection — a click places a fresh caret.
+                let s = this.search_mut(which);
+                s.focus.focus(window);
+                s.sel_anchor = None;
                 cx.notify();
             }))
             .child(icon(icons::SEARCH, px(16.)).flex_shrink_0())
-            .child(self.render_text(text))
-            .children(self.text.is_empty().then(|| {
-                div()
-                    .flex_1()
-                    .text_size(px(12.25))
-                    .text_color(dim)
-                    .child(placeholder.to_string())
-            }))
+            .child(self.render_text(text, dim, placeholder, focused))
             .child(self.render_buttons(which, is_dark, cx))
     }
 
-    fn render_text(&self, text: gpui::Rgba) -> impl IntoElement {
-        let cursor = self.cursor.min(self.text.len());
-        let (before, after) = self.text.split_at(cursor);
-        div()
+    /// Single flex_1 text area: either the placeholder (left-aligned, when
+    /// empty) or the text with caret + selection highlight. One child — never
+    /// both — so the placeholder always starts at the field's left edge.
+    fn render_text(
+        &self,
+        text: gpui::Rgba,
+        dim: gpui::Rgba,
+        placeholder: &str,
+        focused: bool,
+    ) -> impl IntoElement {
+        // Selection wash: accent at ~30%.
+        let selected = gpui::rgba(0x0078d44d);
+        let caret = || div().w(px(1.5)).h(px(15.)).bg(theme::accent());
+        let base = div()
             .flex_1()
             .flex()
             .flex_row()
             .items_center()
             .text_size(px(12.25))
-            .text_color(text)
-            .overflow_hidden()
-            .child(before.to_string())
-            // Caret: thin accent bar between the two runs — correct position by construction.
-            .child(div().w(px(1.5)).h(px(15.)).bg(theme::accent()))
-            .child(after.to_string())
+            .overflow_hidden();
+        if self.text.is_empty() {
+            base.text_color(dim)
+                .children(focused.then(caret))
+                .child(placeholder.to_string())
+        } else {
+            let cursor = self.cursor.min(self.text.len());
+            let mut row = base.text_color(text);
+            match self.selection_range() {
+                Some((lo, hi)) => {
+                    row = row.child(self.text[..lo].to_string());
+                    if focused && cursor == lo {
+                        row = row.child(caret());
+                    }
+                    row = row.child(
+                        div()
+                            .bg(selected)
+                            .rounded(px(2.))
+                            .child(self.text[lo..hi].to_string()),
+                    );
+                    if focused && cursor == hi {
+                        row = row.child(caret());
+                    }
+                    row.child(self.text[hi..].to_string())
+                }
+                None => {
+                    row = row.child(self.text[..cursor].to_string());
+                    if focused {
+                        row = row.child(caret());
+                    }
+                    row.child(self.text[cursor..].to_string())
+                }
+            }
+        }
     }
 
     fn render_buttons(&self, which: SearchWhich, is_dark: bool, cx: &mut Context<Popup>) -> impl IntoElement {
@@ -287,4 +388,124 @@ fn regex_button(
             cx.notify();
         }))
         .child(icon(icons::REGEX, px(14.)).flex_shrink_0())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{KeyDownEvent, Keystroke, Modifiers};
+
+    fn no_mods() -> Modifiers {
+        Modifiers {
+            control: false,
+            alt: false,
+            shift: false,
+            platform: false,
+            function: false,
+        }
+    }
+
+    fn key(key: &str, mods: Modifiers) -> KeyDownEvent {
+        // key_char mirrors what the platform reports for printable keys.
+        let printable = !mods.control && !mods.platform && key.chars().count() == 1;
+        KeyDownEvent {
+            keystroke: Keystroke {
+                modifiers: mods,
+                key: key.to_string(),
+                key_char: printable.then(|| key.to_string()),
+            },
+            is_held: false,
+        }
+    }
+
+    fn ctrl_a() -> KeyDownEvent {
+        key(
+            "a",
+            Modifiers {
+                control: true,
+                ..no_mods()
+            },
+        )
+    }
+
+    fn edit(text: &str, cursor: usize) -> (String, usize, Option<usize>) {
+        (text.to_string(), cursor, None)
+    }
+
+    #[test]
+    fn plain_typing_and_backspace_unchanged() {
+        let (mut text, mut cursor, mut anchor) = edit("hi", 2);
+        assert!(edit_text(&mut text, &mut cursor, &mut anchor, &key("!", no_mods())));
+        assert_eq!((text.as_str(), cursor, anchor), ("hi!", 3, None));
+        assert!(edit_text(
+            &mut text,
+            &mut cursor,
+            &mut anchor,
+            &key("backspace", no_mods())
+        ));
+        assert_eq!((text.as_str(), cursor, anchor), ("hi", 2, None));
+    }
+
+    #[test]
+    fn ctrl_a_selects_all() {
+        let (mut text, mut cursor, mut anchor) = edit("hello", 2);
+        assert!(edit_text(&mut text, &mut cursor, &mut anchor, &ctrl_a()));
+        assert_eq!(text.as_str(), "hello");
+        assert_eq!((cursor, anchor), (5, Some(0)));
+    }
+
+    #[test]
+    fn typing_replaces_selection() {
+        let (mut text, mut cursor, mut anchor) = edit("hello", 5);
+        edit_text(&mut text, &mut cursor, &mut anchor, &ctrl_a());
+        assert!(edit_text(&mut text, &mut cursor, &mut anchor, &key("x", no_mods())));
+        assert_eq!((text.as_str(), cursor, anchor), ("x", 1, None));
+    }
+
+    #[test]
+    fn backspace_deletes_selection() {
+        let (mut text, mut cursor, mut anchor) = edit("hello", 5);
+        edit_text(&mut text, &mut cursor, &mut anchor, &ctrl_a());
+        assert!(edit_text(
+            &mut text,
+            &mut cursor,
+            &mut anchor,
+            &key("backspace", no_mods())
+        ));
+        assert_eq!((text.as_str(), cursor, anchor), ("", 0, None));
+    }
+
+    #[test]
+    fn shift_arrow_extends_and_plain_arrow_collapses() {
+        let (mut text, mut cursor, mut anchor) = edit("hello", 2);
+        let shift = Modifiers {
+            shift: true,
+            ..no_mods()
+        };
+        assert!(edit_text(&mut text, &mut cursor, &mut anchor, &key("right", shift)));
+        assert_eq!((cursor, anchor), (3, Some(2)));
+        // Plain arrow collapses the selection.
+        assert!(edit_text(
+            &mut text,
+            &mut cursor,
+            &mut anchor,
+            &key("left", no_mods())
+        ));
+        assert_eq!((cursor, anchor), (2, None));
+        assert_eq!(text.as_str(), "hello");
+    }
+
+    #[test]
+    fn ctrl_other_keys_still_ignored() {
+        let (mut text, mut cursor, mut anchor) = edit("hi", 2);
+        let ctrl_c = key(
+            "c",
+            Modifiers {
+                control: true,
+                ..no_mods()
+            },
+        );
+        assert!(!edit_text(&mut text, &mut cursor, &mut anchor, &ctrl_c));
+        assert_eq!((text.as_str(), cursor, anchor), ("hi", 2, None));
+    }
 }
