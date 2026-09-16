@@ -12,6 +12,17 @@
 //!
 //! Drag state lives in a thread-local: GPUI dispatches pointer events on the UI
 //! thread and only one bar can be dragged at a time.
+//!
+//! Capture model: GPUI only delivers `on_mouse_move` while the pointer hovers
+//! the handler's own hitbox, so handlers bound to the narrow bar (or even to
+//! the scroll-area wrapper) go silent once the pointer drifts onto the header,
+//! search field or tab bar mid-drag. To keep the drag alive anywhere inside
+//! the window, the active drag stores a `scrub`/`finish` pair and the popup
+//! root renders [`drag_capture_layer`] — a transparent window-covering
+//! element, present only while a drag is active, that forwards every move to
+//! `scrub` and ends the drag on any release.
+
+use std::rc::Rc;
 
 use std::cell::RefCell;
 
@@ -31,15 +42,37 @@ const HIT_W: f32 = 12.0;
 /// Thumb floor, so a very long list still leaves something to grab.
 const MIN_THUMB_H: f32 = 28.0;
 
-#[derive(Clone, Copy)]
+/// Scrub the originating bar to a window-Y position.
+type ScrubFn = Rc<dyn Fn(f32, &mut Window, &mut App)>;
+/// Re-render the originating view (the thumb is a plain element).
+type FinishFn = Rc<dyn Fn(&mut Window, &mut App)>;
+
 struct Drag {
     id: &'static str,
-    /// Where inside the thumb the pointer grabbed it.
-    grab: f32,
+    /// Scrub the originating bar to `pointer_y` (window coordinates).
+    scrub: ScrubFn,
+    /// Re-render the originating view (thumb is a plain element).
+    finish: FinishFn,
 }
 
 thread_local! {
     static DRAG: RefCell<Option<Drag>> = const { RefCell::new(None) };
+}
+
+/// Forward a drag update to whichever bar started the active drag, if any.
+fn scrub_active(pointer_y: f32, window: &mut Window, cx: &mut App) {
+    let scrub = DRAG.with(|drag| drag.borrow().as_ref().map(|drag| drag.scrub.clone()));
+    if let Some(scrub) = scrub {
+        scrub(pointer_y, window, cx);
+    }
+}
+
+/// End the active drag, if any, and repaint the originating view.
+fn end_drag(window: &mut Window, cx: &mut App) {
+    let finish = DRAG.with(|drag| drag.borrow_mut().take().map(|drag| drag.finish));
+    if let Some(finish) = finish {
+        finish(window, cx);
+    }
 }
 
 /// The thumb's geometry for one frame, derived from a scroll handle.
@@ -109,7 +142,7 @@ pub fn with_scrollbar(
     repaint: impl Fn(&mut Window, &mut App) + Clone + 'static,
 ) -> impl IntoElement {
     let m = Metrics::of(handle);
-    let dragging = DRAG.with(|drag| drag.borrow().is_some_and(|drag| drag.id == id));
+    let dragging = DRAG.with(|drag| drag.borrow().as_ref().is_some_and(|drag| drag.id == id));
     // Same alphas as `.scrollbar-win11`: 0.2 at rest, 0.35 while hovered or
     // dragged (the React build lifts the thumb on `:hover` only, but a grabbed
     // bar should read as hovered too).
@@ -120,12 +153,32 @@ pub fn with_scrollbar(
     };
     let thumb_color = if dragging { thumb_active } else { thumb_idle };
 
+    // Wrapper-level drag continuation: GPUI only delivers `on_mouse_move`
+    // while the pointer hovers the handler's own hitbox, so a move handler
+    // bound solely to the 12px bar goes silent the moment the pointer slips
+    // sideways off it — even with the button still held. Handling move/up on
+    // the outer wrapper (the whole scroll area) keeps scrubbing alive when
+    // the user drifts off the track. These are no-ops when no drag is active,
+    // so normal hover/click on the content underneath is unaffected.
+    // (The window-covering [`drag_capture_layer`] at the popup root extends
+    // this further: drifts past the scroll area — onto the header, search or
+    // tab bar — keep scrubbing too.)
+    let on_wrap_move = move |event: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
+        scrub_active(f32::from(event.position.y), window, cx);
+    };
+    let on_wrap_up = move |_: &MouseUpEvent, window: &mut Window, cx: &mut App| {
+        end_drag(window, cx);
+    };
+
     div()
         .relative()
         .flex()
         .flex_col()
         .flex_1()
         .min_h(px(0.))
+        .on_mouse_move(on_wrap_move)
+        .on_mouse_up(MouseButton::Left, on_wrap_up.clone())
+        .on_mouse_up_out(MouseButton::Left, on_wrap_up)
         .child(content)
         .children(m.scrollable().then(|| {
             let bar = handle.clone();
@@ -143,32 +196,36 @@ pub fn with_scrollbar(
                     } else {
                         m.thumb_h * 0.5
                     };
-                    DRAG.with(|drag| *drag.borrow_mut() = Some(Drag { id, grab }));
+                    // Publish the drag so the wrapper handler and the
+                    // window-covering capture layer can keep scrubbing even
+                    // when the pointer leaves this bar's hitbox.
+                    let scrub_bar = bar.clone();
+                    let scrub_repaint = repaint.clone();
+                    let finish_repaint = repaint.clone();
+                    DRAG.with(|drag| {
+                        *drag.borrow_mut() = Some(Drag {
+                            id,
+                            scrub: Rc::new(
+                                move |pointer_y: f32, window: &mut Window, cx: &mut App| {
+                                    m.scrub(&scrub_bar, pointer_y, grab);
+                                    scrub_repaint(window, cx);
+                                },
+                            ),
+                            finish: Rc::new(move |window: &mut Window, cx: &mut App| {
+                                finish_repaint(window, cx);
+                            }),
+                        })
+                    });
                     m.scrub(&bar, y, grab);
                     repaint(window, cx);
                 }
             };
-            let on_move = {
-                let bar = bar.clone();
-                let repaint = repaint.clone();
+            let on_move =
                 move |event: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
-                    let grab = DRAG.with(|drag| {
-                        drag.borrow().filter(|drag| drag.id == id).map(|drag| drag.grab)
-                    });
-                    let Some(grab) = grab else {
-                        return;
-                    };
-                    m.scrub(&bar, f32::from(event.position.y), grab);
-                    repaint(window, cx);
-                }
-            };
-            let on_up = {
-                let repaint = repaint.clone();
-                move |_: &MouseUpEvent, window: &mut Window, cx: &mut App| {
-                    if DRAG.with(|drag| drag.borrow_mut().take().is_some()) {
-                        repaint(window, cx);
-                    }
-                }
+                    scrub_active(f32::from(event.position.y), window, cx);
+                };
+            let on_up = move |_: &MouseUpEvent, window: &mut Window, cx: &mut App| {
+                end_drag(window, cx);
             };
             div()
                 .id(id)
@@ -195,4 +252,39 @@ pub fn with_scrollbar(
                 )
                 .into_any_element()
         }))
+}
+
+/// Transparent window-covering capture layer for an in-progress scrollbar drag.
+///
+/// Render this as the last (topmost) child of the popup root: while a drag is
+/// active it forwards every pointer move inside the window to the originating
+/// bar's `scrub` and ends the drag on any release — so drifting off the track
+/// onto the header, search field or tab bar no longer freezes the scroll.
+/// When no drag is active it renders nothing and has zero hit-test impact.
+pub fn drag_capture_layer() -> impl IntoElement {
+    let dragging = DRAG.with(|drag| drag.borrow().is_some());
+    div().children(dragging.then(|| {
+        div()
+            .id("scrollbar-drag-capture")
+            .absolute()
+            .top(px(0.))
+            .left(px(0.))
+            .right(px(0.))
+            .bottom(px(0.))
+            .on_mouse_move(
+                move |event: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
+                    scrub_active(f32::from(event.position.y), window, cx);
+                },
+            )
+            .on_mouse_up(MouseButton::Left, move |_: &MouseUpEvent,
+                                                     window: &mut Window,
+                                                     cx: &mut App| {
+                end_drag(window, cx);
+            })
+            .on_mouse_up_out(MouseButton::Left, move |_: &MouseUpEvent,
+                                                        window: &mut Window,
+                                                        cx: &mut App| {
+                end_drag(window, cx);
+            })
+    }))
 }

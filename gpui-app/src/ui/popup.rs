@@ -837,6 +837,7 @@ impl Render for Popup {
         };
         div()
             .id("popup-root")
+            .relative()
             .flex()
             .flex_col()
             .size_full()
@@ -876,6 +877,10 @@ impl Render for Popup {
             .child(render_drag_strip(is_dark, cx))
             .child(render_tabbar(self, window, cx))
             .child(self.render_body(window, cx))
+            // Scrollbar drag capture: transparent overlay, only present while
+            // a scrollbar thumb is held, so the drag survives drifting off
+            // the track anywhere inside the window.
+            .child(super::scrollbar::drag_capture_layer())
             // Appear animation (fade-in): the id carries a generation counter
             // bumped on every show, so the one-shot animation visibly restarts
             // even though the window — and this view — is persistent now.
