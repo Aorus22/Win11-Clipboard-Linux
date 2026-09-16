@@ -124,7 +124,12 @@ fn footer_preview(
             .flex_row()
             .items_center()
             .gap(px(8.))
-            .child(div().text_size(px(20.)).child(glyph))
+            .child(
+                div()
+                    .text_size(px(20.))
+                    .font_family(crate::pickers::EMOJI_FONT_FAMILY)
+                    .child(glyph),
+            )
             .child(
                 div()
                     .text_size(px(10.5))
@@ -500,6 +505,7 @@ where
                     .items_center()
                     .justify_center()
                     .text_size(px(glyph))
+                    .font_family(crate::pickers::EMOJI_FONT_FAMILY)
                     .cursor_pointer()
                     .border_2()
                     .border_color(if is_focused {
@@ -632,6 +638,7 @@ fn render_emoji_grid_virtual(
                                 .items_center()
                                 .justify_center()
                                 .text_size(px(24.))
+                                .font_family(crate::pickers::EMOJI_FONT_FAMILY)
                                 .cursor_pointer()
                                 .border_2()
                                 .border_color(if is_focused { accent } else { transparent })

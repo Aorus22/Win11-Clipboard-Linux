@@ -11,6 +11,27 @@ use std::sync::OnceLock;
 
 // --- Emoji ---
 
+/// Font family rendering emoji glyphs in the GPUI build.
+///
+/// gpui 0.2.2's Linux text stack (cosmic-text 0.14 + swash 0.2) cannot
+/// rasterize COLRv1 color emoji — the format most distros ship
+/// (e.g. Fedora's Noto-COLRv1.ttf): shaping succeeds but every bitmap comes
+/// back empty, so the picker showed blank cells. It *can* rasterize CBDT
+/// bitmap emoji, so the app bundles `assets/NotoColorEmoji-CBDT.ttf`
+/// (upstream Noto Color Emoji, OFL-licensed) and selects it explicitly.
+/// Two copies of that file differ from upstream, both required:
+/// 1. Renamed family (`ClipboardEmoji`, PostScript name kept as
+///    `NotoColorEmoji` for gpui's emoji fast path) — no system font uses
+///    this family, so fallback is deterministic on every distro.
+/// 2. U+006D ('m') mapped to the space glyph — gpui's `load_family`
+///    ejects any explicitly requested font whose charmap lacks 'm',
+///    which is true for every emoji-only font. Nothing ever shapes
+///    Latin with this family (only emoji runs request it), so the
+///    mapping is never visibly used.
+/// Loaded once at startup in `main`; style every emoji glyph run with
+/// this family.
+pub const EMOJI_FONT_FAMILY: &str = "ClipboardEmoji";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Emoji {
     pub char: String,

@@ -173,6 +173,24 @@ fn assets_dir() -> PathBuf {
     PathBuf::from("/").join(ASSETS_SUFFIX)
 }
 
+/// Bundled CBDT color-emoji font, selected explicitly for emoji glyph runs
+/// (see [`crate::pickers::EMOJI_FONT_FAMILY`]).
+///
+/// `include_bytes!` keeps this working in every layout (AppImage, PREFIX
+/// install, dev checkout) without depending on the runtime assets dir.
+const BUNDLED_EMOJI_FONT: &[u8] = include_bytes!("../assets/NotoColorEmoji-CBDT.ttf");
+
+/// Register the bundled color-emoji font with the text system. Non-fatal:
+/// if loading fails the picker falls back to system fonts (status quo ante).
+fn load_bundled_emoji_font(cx: &mut App) {
+    if let Err(e) = cx
+        .text_system()
+        .add_fonts(vec![std::borrow::Cow::Borrowed(BUNDLED_EMOJI_FONT)])
+    {
+        eprintln!("[gpui-app] bundled emoji font failed to load: {e:?}");
+    }
+}
+
 /// Pin the display backend to X11/XWayland on Wayland sessions.
 ///
 /// xdg-shell has no equivalent of `_NET_WM_WINDOW_TYPE_NOTIFICATION`, so a
@@ -608,6 +626,7 @@ fn main() {
     Application::new()
         .with_assets(GpuiAssets { base: assets_dir() })
         .run(move |cx: &mut App| {
+            load_bundled_emoji_font(cx);
             // Resident holder first: the app must survive with zero visible windows.
             open_holder_window(cx);
             // Persistent popup: created lazily on first toggle (or immediately
