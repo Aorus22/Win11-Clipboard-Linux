@@ -7,6 +7,13 @@
 //! (`/dev/input/event*`); a press the popup window did not receive requests a
 //! hide through the same shared flag the focus watcher uses.
 //!
+//! Tap-to-click needs special handling: a tap on a touchpad often arrives
+//! only as `BTN_TOUCH` down/up with no `BTN_LEFT` at all (libinput synthesizes
+//! the click at the compositor level), so a watcher that only listens for
+//! `BTN_LEFT/RIGHT/MIDDLE` is deaf to taps. A quick touch-down→release is
+//! therefore treated as a click as well; a finger that rests longer is a
+//! rest/drag, not a click, and is ignored.
+//!
 //! Deciding *where* the press happened must not come from X. Under Wayland the
 //! X pointer is frozen while the real pointer is over a Wayland-native window
 //! (Zed, Files, any GTK/Qt app on Wayland): X keeps reporting the last position
@@ -35,7 +42,13 @@ const EV_KEY: u16 = 0x01;
 const BTN_LEFT: u16 = 0x110;
 const BTN_RIGHT: u16 = 0x111;
 const BTN_MIDDLE: u16 = 0x112;
+const BTN_TOUCH: u16 = 0x14a;
 const PRESS: i32 = 1;
+const RELEASE: i32 = 0;
+/// Upper bound for a touch-down→release to count as a tap. A finger resting
+/// on the surface longer than this is a rest/drag, not a click, and must not
+/// dismiss anything.
+const TAP_MAX: Duration = Duration::from_millis(300);
 /// How long to wait for the popup window to report the click it received. The
 /// kernel hands us the press before the compositor has delivered it to the
 /// window, so the answer only exists a few milliseconds later.
@@ -140,6 +153,10 @@ fn read_loop(path: &Path, shared: &Shared) {
         path.display()
     ));
     let mut record = [0u8; EVENT_SIZE];
+    // Pending finger-down for tap detection (per device: a second finger
+    // while one is down produces no new BTN_TOUCH press, so one slot is
+    // enough — the first touch brackets the gesture).
+    let mut touch_down: Option<Instant> = None;
     loop {
         match file.read_exact(&mut record) {
             Ok(_) => {}
@@ -151,13 +168,32 @@ fn read_loop(path: &Path, shared: &Shared) {
         let kind = u16::from_le_bytes([record[16], record[17]]);
         let code = u16::from_le_bytes([record[18], record[19]]);
         let value = i32::from_le_bytes([record[20], record[21], record[22], record[23]]);
-        if kind == EV_KEY
-            && (code == BTN_LEFT || code == BTN_RIGHT || code == BTN_MIDDLE)
-            && value == PRESS
-        {
+        if kind != EV_KEY {
+            continue;
+        }
+        if value == PRESS && (code == BTN_LEFT || code == BTN_RIGHT || code == BTN_MIDDLE) {
             on_button_press(shared);
+        } else if code == BTN_TOUCH {
+            if value == PRESS {
+                touch_down = Some(Instant::now());
+            } else if value == RELEASE {
+                let down = touch_down.take();
+                if touch_tap_completed(down, Instant::now()) {
+                    on_button_press(shared);
+                }
+            }
         }
     }
+}
+
+/// Did a touch-down→release bracket a tap (as opposed to a finger rest/drag)?
+/// Pure so it is unit-testable; the inside/outside decision still goes
+/// through `on_button_press` like a physical button press.
+fn touch_tap_completed(down: Option<Instant>, up: Instant) -> bool {
+    down.is_some_and(|started| {
+        up.checked_duration_since(started)
+            .is_some_and(|held| held <= TAP_MAX)
+    })
 }
 
 /// A physical button went down somewhere: hide the popup iff it is visible and
@@ -254,5 +290,22 @@ mod tests {
         let press = Instant::now();
         let down = press.checked_sub(Duration::from_millis(400));
         assert!(!press_was_inside(7, 7, down, press));
+    }
+
+    #[test]
+    fn quick_touch_release_counts_as_tap() {
+        let up = Instant::now();
+        let down = up.checked_sub(Duration::from_millis(120));
+        assert!(touch_tap_completed(down, up));
+    }
+
+    #[test]
+    fn resting_finger_is_not_a_tap() {
+        let up = Instant::now();
+        // Held well past TAP_MAX: a rest/drag, must not dismiss.
+        let down = up.checked_sub(Duration::from_millis(900));
+        assert!(!touch_tap_completed(down, up));
+        // Release without a recorded press: nothing to complete.
+        assert!(!touch_tap_completed(None, up));
     }
 }

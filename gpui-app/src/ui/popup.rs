@@ -4,7 +4,7 @@
 //! watcher thread bumps a version counter and the poll task refreshes the snapshot.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     Animation, AnimationExt, Context, FocusHandle, Focusable, KeyDownEvent, Render,
@@ -102,7 +102,17 @@ pub struct Popup {
     /// Armed focus-loss dismissal. Dropping the subscription would silently
     /// stop the popup from ever closing itself, so it lives as long as the view.
     activation_watch: Option<gpui::Subscription>,
+    /// Timestamp of the last focus loss with the pointer outside the popup.
+    /// Dismissal fires only if focus stays away past [`FOCUS_LOSS_GRACE`]
+    /// (see `check_focus_loss_dismiss`): on focus-follows-mouse desktops a
+    /// brief excursion must not close the popup, only a real move-away/click.
+    focus_loss_armed_at: Option<Instant>,
 }
+
+/// Grace between focus loss (pointer outside) and auto-dismissal. Long
+/// enough to survive focus flicker and a quick mouse pass-through, short
+/// enough that an outside click still feels like it closes the popup.
+const FOCUS_LOSS_GRACE: Duration = Duration::from_millis(350);
 
 impl PickerTabState {
     fn new(search_focus: FocusHandle) -> Self {
@@ -163,6 +173,7 @@ impl Popup {
             last_settings_mtime: crate::settings::settings_mtime(),
             appear_gen: 0,
             activation_watch: None,
+            focus_loss_armed_at: None,
         }
     }
 
@@ -193,7 +204,27 @@ impl Popup {
         self.tab = tab;
         self.after_filter_change();
         self.appear_gen += 1;
+        // A stale arm from before the hide must never fire right after a show.
+        self.focus_loss_armed_at = None;
         cx.notify();
+    }
+
+    /// Whether a pending focus-loss dismissal has matured and should fire.
+    /// Pure over the timestamp so it is unit-testable.
+    fn focus_loss_due(armed_at: Option<Instant>, now: Instant) -> bool {
+        armed_at.is_some_and(|t| now.saturating_duration_since(t) >= FOCUS_LOSS_GRACE)
+    }
+
+    /// Fire a matured focus-loss dismissal (called from the 50 ms poll loop
+    /// via `check_focus_loss_dismiss`). Returns true when it hid the popup.
+    pub fn check_focus_loss_dismiss(&mut self) -> bool {
+        if Self::focus_loss_due(self.focus_loss_armed_at, Instant::now()) {
+            self.focus_loss_armed_at = None;
+            crate::drag_log::log("activation: dismissed on focus loss (grace elapsed)");
+            self.request_hide();
+            return true;
+        }
+        false
     }
 
     /// Close the popup when another window — or the desktop itself — takes
@@ -214,6 +245,14 @@ impl Popup {
     /// or on the desktop cannot happen with the pointer over the popup, so the
     /// outside-click behaviour is unaffected.
     ///
+    /// Dismissal is delayed by [`FOCUS_LOSS_GRACE`], not instant: on
+    /// focus-follows-mouse desktops focus also moves on hover, so a brief
+    /// excursion (mouse passing over another window, focus flicker) arms the
+    /// timer and regaining focus disarms it — only a sustained move-away,
+    /// such as an outside click, actually hides the popup. The evdev click
+    /// watcher still closes instantly on a physical outside click where it
+    /// can see one.
+    ///
     /// `observe_window_activation` invokes the callback once immediately at
     /// registration, which happens before the popup has been activated, so only
     /// a transition *away* from an activated window dismisses it; reacting to
@@ -223,13 +262,17 @@ impl Popup {
         self.activation_watch = Some(cx.observe_window_activation(window, move |this, window, _| {
             if window.is_window_active() {
                 was_active = true;
+                // Back home: a pending dismissal no longer applies.
+                this.focus_loss_armed_at = None;
             } else if was_active && !window.is_window_hovered() {
                 // Focus-follows-mouse desktops move focus on hover, so focus
                 // loss alone must not close when the user disabled it — the
                 // evdev click watcher still closes on a physical outside click.
                 if this.shared.lock().settings.close_on_focus_loss {
-                    crate::drag_log::log("activation: dismissed on focus loss (pointer outside)");
-                    this.request_hide();
+                    if this.focus_loss_armed_at.is_none() {
+                        crate::drag_log::log("activation: focus loss armed (grace running)");
+                    }
+                    this.focus_loss_armed_at = Some(Instant::now());
                 } else {
                     crate::drag_log::log("activation: focus loss ignored (close_on_focus_loss=off)");
                 }
@@ -1490,5 +1533,25 @@ mod tests {
             Some(4)
         );
         assert_eq!(Popup::clipboard_scroll_index(3, 3, 2, 3, true, false), None);
+    }
+
+    #[test]
+    fn focus_loss_dismissal_needs_sustained_absence() {
+        use super::FOCUS_LOSS_GRACE;
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        // Not armed: never due.
+        assert!(!Popup::focus_loss_due(None, now));
+        // Just armed: grace has not elapsed.
+        assert!(!Popup::focus_loss_due(Some(now), now));
+        assert!(!Popup::focus_loss_due(
+            Some(now - FOCUS_LOSS_GRACE / 2),
+            now
+        ));
+        // Focus stayed away past the grace: due.
+        assert!(Popup::focus_loss_due(
+            Some(now - FOCUS_LOSS_GRACE - Duration::from_millis(1)),
+            now
+        ));
     }
 }

@@ -677,6 +677,7 @@ fn main() {
                         if h
                             .update(cx, |popup, _window, cx| {
                                 popup.poll_backend(cx);
+                                popup.check_focus_loss_dismiss();
                             })
                             .is_err()
                         {
