@@ -324,6 +324,79 @@ impl Popup {
     /// Mirror the React effect: reset focused index when filtered results change.
     pub fn after_filter_change(&mut self) {
         self.focused = 0;
+        self.reset_list_scroll_to_top();
+    }
+
+    /// Map a `focused` index (into `visible_items()`) to the immediate child
+    /// index of the scroll container in `render_list` / `render_sections`.
+    ///
+    /// The scroll container's children include the section headers, so the
+    /// focused item is offset by them. Returns `None` when there is nothing
+    /// to scroll to. Pure (no `self`) so it is unit-testable.
+    pub fn clipboard_scroll_index(
+        focused: usize,
+        visible_len: usize,
+        pinned_len: usize,
+        unpinned_len: usize,
+        show_sections: bool,
+        pinned_expanded: bool,
+    ) -> Option<usize> {
+        if visible_len == 0 || focused >= visible_len {
+            return None;
+        }
+        if !show_sections {
+            return Some(focused);
+        }
+        if pinned_expanded {
+            if unpinned_len == 0 {
+                // Children: [PinnedHeader, pinned...]
+                return Some(focused + 1);
+            }
+            if focused < pinned_len {
+                // Pinned item, skipping the Pinned header.
+                Some(focused + 1)
+            } else {
+                // Unpinned item, skipping both headers.
+                Some(focused + 2)
+            }
+        } else {
+            // Collapsed: visible items are unpinned only.
+            // Children: [PinnedHeader, RecentHeader, unpinned...]
+            if focused >= unpinned_len {
+                return None;
+            }
+            Some(focused + 2)
+        }
+    }
+
+    /// Compute the scroll child index for the current `focused` value.
+    fn focused_scroll_index(&self) -> Option<usize> {
+        let filtered = filter_history(&self.items, &self.search.text, self.search.regex_mode);
+        let show_sections = self.search.text.is_empty() && filtered.iter().any(|i| i.pinned);
+        let pinned_len = filtered.iter().filter(|i| i.pinned).count();
+        let unpinned_len = filtered.len() - pinned_len;
+        let visible_len = self.visible_items().len();
+        Self::clipboard_scroll_index(
+            self.focused,
+            visible_len,
+            pinned_len,
+            unpinned_len,
+            show_sections,
+            self.pinned_expanded,
+        )
+    }
+
+    /// Minimal scroll so the focused history card is fully visible.
+    /// Mirrors the web build's `scrollIntoView({ block: 'nearest' })`.
+    pub(crate) fn scroll_to_focused(&self) {
+        if let Some(idx) = self.focused_scroll_index() {
+            self.list_scroll.scroll_to_item(idx);
+        }
+    }
+
+    /// Jump back to the very top (used on filter reset / show / Home).
+    pub(crate) fn reset_list_scroll_to_top(&self) {
+        self.list_scroll.scroll_to_top_of_item(0);
     }
 
     pub fn save_ui_state(&self) {
@@ -645,6 +718,7 @@ impl Popup {
         }
         let next = (self.focused as isize + delta).clamp(0, len as isize - 1) as usize;
         self.focused = next;
+        self.scroll_to_focused();
         cx.notify();
     }
 
@@ -748,6 +822,7 @@ impl Popup {
                     self.save_ui_state();
                     let pinned = filtered.iter().filter(|i| i.pinned).count();
                     self.focused = pinned.saturating_sub(1);
+                    self.scroll_to_focused();
                     cx.notify();
                 } else {
                     self.move_focus(-1, cx);
@@ -760,6 +835,7 @@ impl Popup {
             }
             "home" => {
                 self.focused = 0;
+                self.reset_list_scroll_to_top();
                 cx.notify();
                 cx.stop_propagation();
             }
@@ -767,6 +843,7 @@ impl Popup {
                 let len = self.visible_items().len();
                 if len > 0 {
                     self.focused = len - 1;
+                    self.scroll_to_focused();
                     cx.notify();
                 }
                 cx.stop_propagation();
@@ -783,6 +860,7 @@ impl Popup {
                     self.pinned_expanded = false;
                     self.save_ui_state();
                     self.focused = 0;
+                    self.scroll_to_focused();
                     cx.notify();
                 } else {
                     self.tab = if key == "left" {
@@ -791,6 +869,9 @@ impl Popup {
                         self.tab.next()
                     };
                     self.focused = 0;
+                    if self.tab == Tab::Clipboard {
+                        self.reset_list_scroll_to_top();
+                    }
                     cx.notify();
                 }
                 cx.stop_propagation();
@@ -1162,6 +1243,7 @@ fn render_section_header(
                 this.pinned_expanded = !this.pinned_expanded;
                 this.save_ui_state();
                 this.focused = 0;
+                this.reset_list_scroll_to_top();
                 cx.notify();
             }
         }))
@@ -1337,5 +1419,76 @@ impl Tab {
             Tab::Emoji => "Emoji",
             Tab::Kaomoji => "Kaomoji",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Popup;
+
+    #[test]
+    fn scroll_index_flat_list_maps_directly() {
+        // No sections: scroll child == focused.
+        assert_eq!(
+            Popup::clipboard_scroll_index(0, 5, 0, 5, false, true),
+            Some(0)
+        );
+        assert_eq!(
+            Popup::clipboard_scroll_index(4, 5, 0, 5, false, true),
+            Some(4)
+        );
+        assert_eq!(Popup::clipboard_scroll_index(5, 5, 0, 5, false, true), None);
+        assert_eq!(Popup::clipboard_scroll_index(0, 0, 0, 0, false, true), None);
+    }
+
+    #[test]
+    fn scroll_index_expanded_sections_skips_headers() {
+        // pinned=2, unpinned=3, expanded.
+        // Children: [PinnedH, p0, p1, RecentH, u0, u1, u2]
+        assert_eq!(
+            Popup::clipboard_scroll_index(0, 5, 2, 3, true, true),
+            Some(1)
+        );
+        assert_eq!(
+            Popup::clipboard_scroll_index(1, 5, 2, 3, true, true),
+            Some(2)
+        );
+        // First unpinned (focused=2) skips both headers.
+        assert_eq!(
+            Popup::clipboard_scroll_index(2, 5, 2, 3, true, true),
+            Some(4)
+        );
+        assert_eq!(
+            Popup::clipboard_scroll_index(4, 5, 2, 3, true, true),
+            Some(6)
+        );
+    }
+
+    #[test]
+    fn scroll_index_expanded_without_unpinned() {
+        // Children: [PinnedH, p0, p1]
+        assert_eq!(
+            Popup::clipboard_scroll_index(0, 2, 2, 0, true, true),
+            Some(1)
+        );
+        assert_eq!(
+            Popup::clipboard_scroll_index(1, 2, 2, 0, true, true),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn scroll_index_collapsed_shows_unpinned_only() {
+        // pinned=2 hidden, unpinned=3 visible.
+        // Children: [PinnedH, RecentH, u0, u1, u2]
+        assert_eq!(
+            Popup::clipboard_scroll_index(0, 3, 2, 3, true, false),
+            Some(2)
+        );
+        assert_eq!(
+            Popup::clipboard_scroll_index(2, 3, 2, 3, true, false),
+            Some(4)
+        );
+        assert_eq!(Popup::clipboard_scroll_index(3, 3, 2, 3, true, false), None);
     }
 }

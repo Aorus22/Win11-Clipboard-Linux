@@ -73,6 +73,9 @@ pub fn render_tabbar(state: &Popup, _window: &Window, cx: &mut Context<Popup>) -
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.tab = tab_id;
                     this.focused = 0;
+                    if tab_id == Tab::Clipboard {
+                        this.reset_list_scroll_to_top();
+                    }
                     cx.notify();
                 }))
                 .child(icon(icon_name, px(16.)).flex_shrink_0())

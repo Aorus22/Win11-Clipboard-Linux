@@ -91,6 +91,7 @@ pub fn render_header(state: &Popup, count: usize, _window: &Window, cx: &mut Con
                             this.backend.clear();
                             this.refresh_items();
                             this.focused = 0;
+                            this.reset_list_scroll_to_top();
                             cx.notify();
                         }))
                         .child("Clear All"),
