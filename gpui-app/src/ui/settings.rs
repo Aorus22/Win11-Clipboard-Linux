@@ -55,6 +55,9 @@ pub struct SettingsState {
     pub shortcut_status: Option<Result<String, String>>,
     pub transparency_disabled: bool,
     pub transparency_reason: String,
+    /// Scroll state of the settings content — drives its scrollbar
+    /// (same hand-rolled bar as the popup list).
+    pub scroll: gpui::ScrollHandle,
 }
 
 impl SettingsState {
@@ -94,6 +97,7 @@ impl SettingsState {
             shortcut_status: None,
             transparency_disabled: env.transparency_disabled,
             transparency_reason: env.reason.clone(),
+            scroll: gpui::ScrollHandle::new(),
         }
     }
 
@@ -449,28 +453,42 @@ impl Render for SettingsState {
             }))
             .children(client_chrome.then(|| titlebar::render_titlebar(is_dark)))
             .child(self.render_header(cx))
-            .child(
-                div()
-                    .id("settings-scroll")
-                    .flex_1()
-                    .min_h(px(0.))
-                    .overflow_y_scroll()
-                    .px(px(32.))
-                    .pt(px(24.))
-                    .pb(px(32.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(24.))
-                    .child(self.render_appearance(&settings, is_dark, cx))
-                    .child(self.render_autodelete(&settings, is_dark, window, cx))
-                    .child(self.render_transparency(&settings, is_dark, window, cx))
-                    .child(self.render_uiscale(&settings, is_dark, window, cx))
-                    .child(self.render_history(&settings, is_dark, window, cx))
-                    .child(self.render_kaomoji(&settings, is_dark, window, cx))
-                    .child(self.render_features(&settings, is_dark, cx))
-                    .child(self.render_shortcuts(is_dark, cx))
-                    .child(self.render_reset(is_dark, cx)),
-            )
+            .child({
+                let scroll = self.scroll.clone();
+                let repaint = {
+                    let entity = cx.entity();
+                    move |_window: &mut Window, cx: &mut gpui::App| {
+                        entity.update(cx, |_, cx| cx.notify());
+                    }
+                };
+                super::scrollbar::with_scrollbar(
+                    "settings-scrollbar",
+                    &scroll,
+                    is_dark,
+                    div()
+                        .id("settings-scroll")
+                        .flex_1()
+                        .min_h(px(0.))
+                        .overflow_y_scroll()
+                        .track_scroll(&scroll)
+                        .px(px(32.))
+                        .pt(px(24.))
+                        .pb(px(32.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(24.))
+                        .child(self.render_appearance(&settings, is_dark, cx))
+                        .child(self.render_autodelete(&settings, is_dark, window, cx))
+                        .child(self.render_transparency(&settings, is_dark, window, cx))
+                        .child(self.render_uiscale(&settings, is_dark, window, cx))
+                        .child(self.render_history(&settings, is_dark, window, cx))
+                        .child(self.render_kaomoji(&settings, is_dark, window, cx))
+                        .child(self.render_features(&settings, is_dark, cx))
+                        .child(self.render_shortcuts(is_dark, cx))
+                        .child(self.render_reset(is_dark, cx)),
+                    repaint,
+                )
+            })
             .children(self.dragging.map(|id| {
                 // Window-covering capture layer while a slider is dragged:
                 // the slider element is only 16px tall, so a drag that
