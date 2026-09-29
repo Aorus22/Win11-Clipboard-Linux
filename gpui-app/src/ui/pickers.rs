@@ -331,7 +331,7 @@ fn pill(
             theme::tertiary_bg(is_dark, tertiary)
         })
         .text_color(if active {
-            gpui::rgb(0xffffff)
+            theme::on_accent()
         } else {
             secondary_text(is_dark)
         })

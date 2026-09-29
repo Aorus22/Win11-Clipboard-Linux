@@ -153,7 +153,7 @@ fn parse_color(data: &str) -> gpui::Rgba {
             return gpui::rgb((nums[0] as u32) << 16 | (nums[1] as u32) << 8 | nums[2] as u32);
         }
     }
-    gpui::rgb(0x888888)
+    theme::placeholder()
 }
 
 fn render_content(
@@ -230,7 +230,7 @@ fn render_image(
             .max_h(px(96.))
             .rounded(px(4.))
             .overflow_hidden()
-            .bg(gpui::rgba(0x0000001a))
+            .bg(theme::black_pct(0.10))
             .children(thumb.map(|image| {
                 img(gpui::ImageSource::Image(Arc::new(image)))
                     .max_w_full()
@@ -252,7 +252,7 @@ fn render_image(
             .px(px(6.))
             .py(px(2.))
             .rounded(px(4.))
-            .bg(gpui::rgba(0x00000099))
+            .bg(theme::black_pct(0.60))
             .text_size(px(10.5))
             .text_color(gpui::rgb(0xffffff))
             .child(format!("{width}×{height}")),
@@ -294,7 +294,7 @@ fn render_actions(
     let del_id = item.id.clone();
     let pinned = item.pinned;
     // Only the delete button turns red on hover (parity with HistoryItem).
-    let danger = gpui::rgb(0xff5f5f);
+    let danger = theme::error();
     div()
         .flex()
         .flex_row()

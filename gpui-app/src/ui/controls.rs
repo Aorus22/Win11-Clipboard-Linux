@@ -59,16 +59,16 @@ pub fn switch(
         .bg(if checked {
             theme::accent()
         } else if is_dark {
-            gpui::rgba(0xffffff1a)
+            theme::white_pct(0.10)
         } else {
-            gpui::rgb(0xd1d5db)
+            theme::gray::g300()
         })
         .child(
             div()
                 .w(px(16.))
                 .h(px(16.))
                 .rounded_full()
-                .bg(gpui::rgb(0xffffff))
+                .bg(theme::on_accent())
                 .ml(px(if checked { 24. } else { 4. })),
         )
         .on_click(cx.listener(on_toggle))
@@ -94,7 +94,9 @@ pub fn slider(
     on_commit: impl Fn(&mut SettingsState, &mut Context<SettingsState>) + 'static,
 ) -> gpui::AnyElement {
     let frac = ((value - min) / (max - min)).clamp(0.0, 1.0);
-    let win_w = f32::from(window.bounds().size.width);
+    // The Settings card is inset inside the window by the CSD shadow margin, so
+    // the window is that much wider than the surface the track is laid out in.
+    let win_w = f32::from(window.bounds().size.width) - 2.0 * theme::WINDOW_SHADOW_MARGIN;
     let knob_x = frac * slider_track_w(win_w);
     // Shared by the down + move handlers (each `move` closure needs its own handle).
     let on_change = std::sync::Arc::new(on_change);
@@ -118,9 +120,9 @@ pub fn slider(
         }
     };
     let track_bg = if is_dark {
-        gpui::rgb(0x374151)
+        theme::gray::g700()
     } else {
-        gpui::rgb(0xe5e7eb)
+        theme::gray::g200()
     };
     div()
         .id(("slider", id as usize))
@@ -148,8 +150,15 @@ pub fn slider(
                         return;
                     }
                     this.dragging = Some(id);
-                    let w = f32::from(window.bounds().size.width);
-                    let v = slider_value_from_x(f32::from(event.position.x), w, min, max, step);
+                    let w = f32::from(window.bounds().size.width)
+                        - 2.0 * theme::WINDOW_SHADOW_MARGIN;
+                    let v = slider_value_from_x(
+                        f32::from(event.position.x) - theme::WINDOW_SHADOW_MARGIN,
+                        w,
+                        min,
+                        max,
+                        step,
+                    );
                     on_change(this, v, cx);
                     cx.notify();
                 }
@@ -161,8 +170,15 @@ pub fn slider(
                 if this.dragging != Some(id) || disabled {
                     return;
                 }
-                let w = f32::from(window.bounds().size.width);
-                let v = slider_value_from_x(f32::from(event.position.x), w, min, max, step);
+                let w = f32::from(window.bounds().size.width)
+                    - 2.0 * theme::WINDOW_SHADOW_MARGIN;
+                let v = slider_value_from_x(
+                    f32::from(event.position.x) - theme::WINDOW_SHADOW_MARGIN,
+                    w,
+                    min,
+                    max,
+                    step,
+                );
                 on_change(this, v, cx);
                 cx.notify();
             }
@@ -263,7 +279,7 @@ impl TextField {
         };
         let cursor = self.cursor.min(self.text.len());
         let focused = self.focus.is_focused(window);
-        let selected = gpui::rgba(0x0078d44d);
+        let selected = theme::accent_alpha(0x4d);
         let caret = || div().w(px(1.5)).h(px(15.)).bg(theme::accent());
         // Selection range (sorted, non-empty), if any.
         let selection = self.sel_anchor.and_then(|a| {
@@ -313,14 +329,14 @@ impl TextField {
             .rounded(px(6.))
             .border_1()
             .border_color(if is_dark {
-                gpui::rgba(0xffffff1a)
+                theme::white_pct(0.10)
             } else {
-                gpui::rgb(0xe5e7eb)
+                theme::gray::g200()
             })
             .bg(if is_dark {
-                gpui::rgba(0xffffff0d)
+                theme::white_pct(0.05)
             } else {
-                gpui::rgb(0xf9fafb)
+                theme::gray::g50()
             })
             .text_size(px(12.25))
             .text_color(text_color)

@@ -7,15 +7,14 @@
 use std::sync::Arc;
 
 use gpui::{
-    ClickEvent, Context, FocusHandle, Focusable, KeyDownEvent, Render, SharedString, Window,
-    div, prelude::*, px,
+    ClickEvent, Context, FocusHandle, Focusable, KeyDownEvent, MouseButton, Render, SharedString,
+    Window, div, prelude::*, px,
 };
 
 use super::icons::{self, icon};
 use super::titlebar;
 use crate::app_state::{self, Shared};
 use crate::backend::BackendService;
-use crate::settings::system_prefers_dark;
 use crate::theme;
 use win11_clipboard_history_lib::{
     permission_checker::{self, PermissionStatus},
@@ -79,8 +78,9 @@ impl WizardState {
         this
     }
 
+    /// Resolved by the main loop (`theme::resolve`) — never probed during render.
     fn is_dark(&self) -> bool {
-        system_prefers_dark()
+        self.shared.lock().theme.is_dark
     }
 
     fn refresh_all(&mut self) {
@@ -188,11 +188,29 @@ impl Render for WizardState {
         let is_dark = self.is_dark();
         // Sessions where the compositor paints no title bar get ours (min/max/close).
         let client_chrome = titlebar::needs_client_chrome(window);
+        // Transparent frame around the visible card, carrying this window's own
+        // shadow (see `theme::WINDOW_SHADOW_MARGIN`), exactly like Settings.
+        div()
+            .id("wizard-frame")
+            .size_full()
+            .p(px(theme::WINDOW_SHADOW_MARGIN))
+            .child(
         div()
             .id("wizard-root")
+            .relative()
             .flex()
             .flex_col()
             .size_full()
+            // Same rounded ARGB surface as the Settings window (see `centered_options`).
+            .overflow_hidden()
+            .shadow(theme::window_shadow())
+            .rounded(px(theme::RADIUS_WINDOW))
+            .border_1()
+            .border_color(if is_dark {
+                theme::dark::border()
+            } else {
+                theme::light::border()
+            })
             .bg(if is_dark {
                 theme::dark::bg_primary()
             } else {
@@ -207,7 +225,22 @@ impl Render for WizardState {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.handle_key(event, window, cx);
             }))
-            .children(client_chrome.then(|| titlebar::render_titlebar(is_dark)))
+            // Chromeless sessions get no title strip (the steps are centred, a
+            // 36px bar above them was pure dead space): the top edge drags and
+            // the controls float over the top-right corner instead.
+            .children(client_chrome.then(|| {
+                div()
+                    .id("wizard-drag-strip")
+                    .absolute()
+                    .top(px(0.))
+                    .left(px(0.))
+                    .right(px(0.))
+                    .h(px(28.))
+                    .cursor_grab()
+                    .on_mouse_down(MouseButton::Left, |_, window, _| {
+                        window.start_window_move()
+                    })
+            }))
             .child(
                 div()
                     .flex_1()
@@ -225,6 +258,14 @@ impl Render for WizardState {
                             .child(self.render_step(cx))
                             .child(self.render_dots(cx)),
                     ),
+            )
+            .children(client_chrome.then(|| {
+                div()
+                    .absolute()
+                    .top(px(2.))
+                    .right(px(6.))
+                    .child(titlebar::render_controls(is_dark))
+            }))
             )
     }
 }
@@ -335,19 +376,19 @@ impl WizardState {
         let is_dark = self.is_dark();
         let (bg, border, text) = match kind {
             "success" => (
-                if is_dark { gpui::rgba(0x6ccb5f26) } else { theme::tint::green50() },
-                if is_dark { gpui::rgba(0x6ccb5f33) } else { theme::tint::green200() },
-                if is_dark { gpui::rgb(0x6ccb5f) } else { theme::tint::green700() },
+                if is_dark { theme::tint::success_bg_dark() } else { theme::tint::green50() },
+                if is_dark { theme::success_alpha(0x33) } else { theme::tint::green200() },
+                if is_dark { theme::success() } else { theme::tint::green700() },
             ),
             "warning" => (
-                if is_dark { gpui::rgba(0xfcb90026) } else { theme::tint::amber50() },
-                if is_dark { gpui::rgba(0xfcb90033) } else { theme::tint::amber200() },
-                if is_dark { gpui::rgb(0xfcb900) } else { theme::tint::amber700() },
+                if is_dark { theme::tint::warning_bg_dark() } else { theme::tint::amber50() },
+                if is_dark { theme::warning_alpha(0x33) } else { theme::tint::amber200() },
+                if is_dark { theme::warning() } else { theme::tint::amber700() },
             ),
             _ => (
-                if is_dark { gpui::rgba(0xff5f5f26) } else { theme::tint::red50() },
-                if is_dark { gpui::rgba(0xff5f5f33) } else { theme::tint::red50() },
-                if is_dark { gpui::rgb(0xff5f5f) } else { theme::tint::red600() },
+                if is_dark { theme::tint::error_bg_dark() } else { theme::tint::red50() },
+                if is_dark { theme::error_alpha(0x33) } else { theme::tint::red50() },
+                if is_dark { theme::error() } else { theme::tint::red600() },
             ),
         };
         div()
@@ -717,11 +758,11 @@ impl WizardState {
                     .justify_center()
                     .mb(px(24.))
                     .bg(if is_dark {
-                        gpui::rgba(0x6ccb5f33)
+                        theme::success_alpha(0x33)
                     } else {
                         theme::tint::green50()
                     })
-                    .text_color(gpui::rgb(0x6ccb5f))
+                    .text_color(theme::success())
                     .child(icon(icons::CHECK_CIRCLE, px(32.)).flex_shrink_0()),
             )
             .child(self.title("You're all set!", 20.0))

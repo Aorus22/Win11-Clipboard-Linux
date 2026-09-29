@@ -4,9 +4,9 @@
 //! client-side decorations: on a compositor that answers with
 //! `Decorations::Client`, nobody paints a title bar, so the window could not be
 //! moved, minimised or closed at all. When [`needs_client_chrome`] says the WM
-//! is not decorating us, this strip stands in for it — drag anywhere, buttons on
-//! the right — and when the WM does decorate us (`Decorations::Server`) nothing
-//! here is rendered, so the two can never both appear.
+//! is not decorating us, the views place [`render_controls`] in their own header
+//! (settings) or over the top-right corner (wizard) — no separate strip, so the
+//! window starts with content instead of a mostly empty bar.
 
 use gpui::{ClickEvent, Decorations, IntoElement, MouseButton, App, Window, div, prelude::*, px};
 
@@ -18,33 +18,21 @@ pub fn needs_client_chrome(window: &Window) -> bool {
     matches!(window.window_decorations(), Decorations::Client { .. })
 }
 
-/// 36px title bar: draggable strip, minimise / maximise / close on the right.
-pub fn render_titlebar(is_dark: bool) -> gpui::AnyElement {
+/// Minimise / maximise / close, for the top-right of a view-drawn header.
+pub fn render_controls(is_dark: bool) -> gpui::AnyElement {
     let glyph = if is_dark {
         theme::gray::g400()
     } else {
         theme::gray::g500()
     };
     div()
-        .id("titlebar")
-        .w_full()
-        .h(px(36.))
+        .id("window-controls")
         .flex()
         .flex_row()
         .items_center()
         .justify_end()
         .gap(px(2.))
-        .px(px(6.))
         .flex_shrink_0()
-        .bg(if is_dark {
-            theme::dark::bg_primary()
-        } else {
-            theme::tint::settings_light_bg()
-        })
-        .cursor_grab()
-        .on_mouse_down(MouseButton::Left, |_, window, _| {
-            window.start_window_move()
-        })
         .child(control(
             "titlebar-minimize",
             is_dark,
@@ -102,7 +90,7 @@ fn control(
         .child(glyph);
     let button = if close {
         // Windows 11 close-hover red.
-        button.hover(|s| s.bg(gpui::rgb(0xc42b1c)).text_color(gpui::rgb(0xffffff)))
+        button.hover(|s| s.bg(theme::close_hover()).text_color(theme::on_accent()))
     } else if is_dark {
         button.hover(|s| s.bg(theme::white_pct(0.10)))
     } else {

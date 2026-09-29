@@ -106,7 +106,7 @@ impl AppSettings {
     pub fn validate(&mut self) {
         self.dark_background_opacity = self.dark_background_opacity.clamp(0.0, 1.0);
         self.light_background_opacity = self.light_background_opacity.clamp(0.0, 1.0);
-        if !["system", "dark", "light"].contains(&self.theme_mode.as_str()) {
+        if !["system", "dark", "light", "gtk"].contains(&self.theme_mode.as_str()) {
             self.theme_mode = "system".to_string();
         }
         self.max_history_size = self.max_history_size.clamp(1, 100_000);
@@ -146,8 +146,9 @@ pub fn settings_mtime() -> Option<std::time::SystemTime> {
         .ok()
 }
 
-/// GNOME `color-scheme` probe for `theme_mode == "system"`.
-/// The full XDG portal listener lands in Phase 5 (SYS-04); this covers day-one parity.
+/// GNOME `color-scheme` probe — the fallback for `theme_mode == "system"` and
+/// for `"gtk"` when no GTK palette could be read. The XDG portal listener lives
+/// in `theme_watch` (SYS-04).
 pub fn system_prefers_dark() -> bool {
     if let Ok(output) = std::process::Command::new("gsettings")
         .args([
@@ -164,14 +165,6 @@ pub fn system_prefers_dark() -> bool {
     }
     // Unknown desktop: match Tauri fallback behavior (light) — documented delta if it bites.
     false
-}
-
-pub fn resolve_dark(settings: &AppSettings) -> bool {
-    match settings.theme_mode.as_str() {
-        "dark" => true,
-        "light" => false,
-        _ => system_prefers_dark(),
-    }
 }
 
 pub fn load() -> AppSettings {
@@ -249,6 +242,20 @@ mod tests {
         assert_eq!(s.theme_mode, "system");
         assert!((s.dark_background_opacity - 1.0).abs() < f32::EPSILON);
         assert!((s.ui_scale - 2.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn validate_accepts_gtk_theme_mode() {
+        let mut s = AppSettings {
+            theme_mode: "gtk".to_string(),
+            ..Default::default()
+        };
+        s.validate();
+        assert_eq!(s.theme_mode, "gtk");
+        // Old config files (no `gtk` value yet) must still load.
+        let old: AppSettings = serde_json::from_str(r#"{"theme_mode":"system"}"#)
+            .expect("old settings parse");
+        assert_eq!(old.theme_mode, "system");
     }
 
     #[test]

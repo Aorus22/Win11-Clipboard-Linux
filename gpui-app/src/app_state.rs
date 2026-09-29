@@ -13,9 +13,13 @@ use parking_lot::Mutex;
 
 use crate::backend::BackendService;
 use crate::settings::{self, AppSettings};
+use crate::theme::ResolvedTheme;
 
 pub struct SharedConfig {
     pub settings: AppSettings,
+    /// Last resolved theme. `theme::resolve` installs the palette globally;
+    /// caching the flags here keeps render paths away from GTK entirely.
+    pub theme: ResolvedTheme,
     pub version: u64,
     /// Set by the settings window Reset action; the main poll loop opens the
     /// wizard window and clears it (parity: `show-setup-wizard` event).
@@ -45,9 +49,10 @@ pub struct SharedConfig {
 
 pub type Shared = Arc<Mutex<SharedConfig>>;
 
-pub fn shared(settings: AppSettings) -> Shared {
+pub fn shared(settings: AppSettings, theme: ResolvedTheme) -> Shared {
     Arc::new(Mutex::new(SharedConfig {
         settings,
+        theme,
         version: 1,
         open_wizard_requested: false,
         open_popup_requested: false,
@@ -200,7 +205,7 @@ mod tests {
         let _serial = crate::test_util::serial_lock();
         let backup = backup_settings();
         let backend = BackendService::new(&AppSettings::default());
-        let shared = shared(AppSettings::default());
+        let shared = shared(AppSettings::default(), ResolvedTheme::win11(false));
         assert_eq!(shared.lock().version, 1);
         shared.lock().settings.dark_background_opacity = 0.42;
         save_now(&shared, &backend).expect("save");

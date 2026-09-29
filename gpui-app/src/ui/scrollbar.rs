@@ -31,6 +31,8 @@ use gpui::{
     point, prelude::*, px,
 };
 
+use crate::theme;
+
 /// Visual width of the thumb and its corner radius — React's `.scrollbar-win11`
 /// uses a 6 px bar with `border-radius: 3px` in both themes.
 const THUMB_W: f32 = 6.0;
@@ -147,9 +149,9 @@ pub fn with_scrollbar(
     // dragged (the React build lifts the thumb on `:hover` only, but a grabbed
     // bar should read as hovered too).
     let (thumb_idle, thumb_active) = if is_dark {
-        (gpui::rgba(0xffffff33), gpui::rgba(0xffffff59))
+        (theme::white_pct(0.20), theme::white_pct(0.35))
     } else {
-        (gpui::rgba(0x00000033), gpui::rgba(0x00000059))
+        (theme::black_pct(0.20), theme::black_pct(0.35))
     };
     let thumb_color = if dragging { thumb_active } else { thumb_idle };
 

@@ -18,7 +18,8 @@ use super::icons::{self, icon};
 use super::titlebar;
 use crate::app_state::{self, Shared};
 use crate::backend::BackendService;
-use crate::settings::{AppSettings, resolve_dark};
+use crate::gtk_theme;
+use crate::settings::AppSettings;
 use crate::theme;
 use win11_clipboard_history_lib::rendering_env;
 
@@ -27,6 +28,8 @@ pub enum ThemeChoice {
     System,
     Light,
     Dark,
+    /// Follow the desktop's GTK theme colors (`theme_mode == "gtk"`).
+    Gtk,
 }
 
 impl ThemeChoice {
@@ -35,6 +38,7 @@ impl ThemeChoice {
             ThemeChoice::System => "system",
             ThemeChoice::Light => "light",
             ThemeChoice::Dark => "dark",
+            ThemeChoice::Gtk => "gtk",
         }
     }
 }
@@ -106,7 +110,23 @@ impl SettingsState {
     }
 
     fn is_dark(&self) -> bool {
-        resolve_dark(&self.shared.lock().settings)
+        // Resolved by the main loop; render must not probe GTK itself.
+        self.shared.lock().theme.is_dark
+    }
+
+    /// True when the user picked the desktop theme but no GTK palette could be
+    /// read (headless, no tray, exotic theme) — the UI then says so.
+    fn theme_fallback(&self) -> bool {
+        self.shared.lock().settings.theme_mode == "gtk" && !theme::gtk_active()
+    }
+
+    /// Install the freshly chosen mode immediately (live-apply, then persist).
+    fn apply_theme(&mut self) {
+        let settings = self.shared.lock().settings.clone();
+        let resolved = theme::resolve(&settings);
+        let mut guard = self.shared.lock();
+        guard.theme = resolved;
+        guard.version += 1;
     }
 
     fn edit(&mut self, f: impl FnOnce(&mut AppSettings)) {
@@ -133,6 +153,9 @@ impl SettingsState {
     fn set_theme(&mut self, mode: ThemeChoice, cx: &mut Context<Self>) {
         let mode = mode.as_str().to_string();
         self.edit(|s| s.theme_mode = mode);
+        // Resolve before saving (and before the popup polls) so the window itself
+        // repaints with the new palette on this same frame.
+        self.apply_theme();
         self.commit();
         cx.notify();
     }
@@ -430,13 +453,32 @@ impl Render for SettingsState {
         let is_dark = self.is_dark();
         // Sessions where the compositor paints no title bar get ours (min/max/close).
         let client_chrome = titlebar::needs_client_chrome(window);
+        // Transparent frame around the visible card: the shadow gpui paints into
+        // it is this window's own (mutter draws none that follows the rounded
+        // corners — see `theme::WINDOW_SHADOW_MARGIN`).
         div()
+            .id("settings-frame")
+            .size_full()
+            .p(px(theme::WINDOW_SHADOW_MARGIN))
+            .child(
+                div()
             .id("settings-root")
             .relative()
             .flex()
             .flex_col()
             .size_full()
             .overflow_hidden()
+            .shadow(theme::window_shadow())
+            // Rounded window: the surface is ARGB, so the transparent corners
+            // (and the 1px outline, which is all a shadow-less X11 window has to
+            // separate itself from the desktop) read like a native GNOME app.
+            .rounded(px(theme::RADIUS_WINDOW))
+            .border_1()
+            .border_color(if is_dark {
+                theme::dark::border()
+            } else {
+                theme::light::border()
+            })
             .bg(if is_dark {
                 theme::dark::bg_primary()
             } else {
@@ -451,9 +493,7 @@ impl Render for SettingsState {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.handle_key(event, window, cx);
             }))
-            .children(client_chrome.then(|| titlebar::render_titlebar(is_dark)))
-            .child(self.render_header(cx))
-            .child({
+            .child(self.render_header(client_chrome, cx))            .child({
                 let scroll = self.scroll.clone();
                 let repaint = {
                     let entity = cx.entity();
@@ -472,7 +512,7 @@ impl Render for SettingsState {
                         .overflow_y_scroll()
                         .track_scroll(&scroll)
                         .px(px(32.))
-                        .pt(px(24.))
+                        .pt(px(16.))
                         .pb(px(32.))
                         .flex()
                         .flex_col()
@@ -511,9 +551,10 @@ impl Render for SettingsState {
                             if this.dragging != Some(id) {
                                 return;
                             }
-                            let w = f32::from(window.bounds().size.width);
+                            let w = f32::from(window.bounds().size.width)
+                                - 2.0 * theme::WINDOW_SHADOW_MARGIN;
                             let v = super::controls::slider_value_from_x(
-                                f32::from(event.position.x),
+                                f32::from(event.position.x) - theme::WINDOW_SHADOW_MARGIN,
                                 w,
                                 min,
                                 max,
@@ -555,23 +596,27 @@ impl Render for SettingsState {
                     )
                     .into_any_element()
             }))
+            )
     }
 }
 
 impl SettingsState {
-    fn render_header(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_header(&self, client_chrome: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
         let is_dark = self.is_dark();
         let show_pill = self.saved_flash || self.save_error.is_some();
         let is_error = self.save_error.is_some();
         div()
             .id("settings-header")
+            .relative()
             .flex()
             .flex_row()
-            .items_center()
-            .justify_between()
-            .gap(px(12.))
+            // The window controls and the save pill float in the corner; keeping
+            // them out of the flow is what lets the subtitle stay on one line.
+            .items_start()
+            .gap(px(8.))
             .px(px(32.))
-            .py(px(24.))
+            .pt(px(12.))
+            .pb(px(12.))
             .border_b_1()
             .border_color(if is_dark {
                 theme::white_pct(0.05)
@@ -590,13 +635,13 @@ impl SettingsState {
             .child(
                 div().flex().flex_col().flex_1().min_w(px(0.)).child(
                     div()
-                        .text_size(px(24.))
+                        .text_size(px(22.))
                         .font_weight(gpui::FontWeight::BOLD)
                         .child("Personalization"),
                 ).child(
                     div()
                         .text_size(px(12.25))
-                        .mt(px(4.))
+                        .mt(px(2.))
                         .text_color(if is_dark {
                             theme::gray::g400()
                         } else {
@@ -605,41 +650,53 @@ impl SettingsState {
                         .child("Customize the look and feel of your clipboard history"),
                 ),
             )
-            .child(
+            // Absolute, so min/max/close sit in the window corner exactly like a
+            // native title bar instead of riding the 32px content padding. The
+            // save pill shares the row (to their left) — also out of the flow, so
+            // neither can squeeze the subtitle onto a second line.
+            .children((show_pill || client_chrome).then(|| {
                 div()
+                    .absolute()
+                    .top(px(4.))
+                    .right(px(4.))
                     .flex()
                     .flex_row()
                     .items_center()
-                    .justify_end()
-                    .gap(px(4.))
-                    .flex_shrink_0()
-                    .children(show_pill.then(|| {
+                    .gap(px(8.))
+                    .child(
                         div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(8.))
-                            .px(px(12.))
-                            .py(px(6.))
-                            .rounded_full()
-                            .text_size(px(10.5))
-                            .bg(if is_error {
-                                gpui::rgba(0xef444410)
-                            } else if is_dark {
-                                theme::white_pct(0.10)
-                            } else {
-                                theme::black_pct(0.05)
-                            })
-                            .text_color(if is_error {
-                                theme::tint::red500()
-                            } else if is_dark {
-                                gpui::rgb(0xffffff)
-                            } else {
-                                gpui::rgb(0x000000)
-                            })
-                            .child(if is_error { "Error saving" } else { "Saved" }.to_string())
-                    })),
-            )
+                            .flex_shrink_0()
+                            .children(show_pill.then(|| {
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .px(px(12.))
+                                    .py(px(6.))
+                                    .rounded_full()
+                                    .text_size(px(10.5))
+                                    .bg(if is_error {
+                                        theme::error_alpha(0x10)
+                                    } else if is_dark {
+                                        theme::white_pct(0.10)
+                                    } else {
+                                        theme::black_pct(0.05)
+                                    })
+                                    .text_color(if is_error {
+                                        theme::tint::red500()
+                                    } else if is_dark {
+                                        theme::dark::text_primary()
+                                    } else {
+                                        theme::light::text_primary()
+                                    })
+                                    .child(
+                                        if is_error { "Error saving" } else { "Saved" }.to_string(),
+                                    )
+                            })),
+                    )
+                    .children(client_chrome.then(|| titlebar::render_controls(is_dark)))
+            }))
             .into_any_element()
     }
 
@@ -650,12 +707,12 @@ impl SettingsState {
             .border_color(if is_dark {
                 theme::white_pct(0.05)
             } else {
-                gpui::rgba(0xe5e7eb99)
+                theme::with_alpha_byte(theme::gray::g200(), 0x99)
             })
             .bg(if is_dark {
                 theme::dark::bg_secondary()
             } else {
-                gpui::rgb(0xffffff)
+                theme::light::bg_card()
             })
             .child(body)
             .into_any_element()
@@ -674,7 +731,7 @@ impl SettingsState {
             .border_color(if is_dark {
                 theme::white_pct(0.05)
             } else {
-                gpui::rgba(0xe5e7eb99)
+                theme::with_alpha_byte(theme::gray::g200(), 0x99)
             })
             .child(
                 div()
@@ -726,7 +783,7 @@ impl SettingsState {
             .border_color(if is_dark {
                 theme::white_pct(0.05)
             } else {
-                gpui::rgba(0xe5e7eb99)
+                theme::with_alpha_byte(theme::gray::g200(), 0x99)
             })
             .flex()
             .flex_col()
@@ -761,7 +818,10 @@ impl SettingsState {
             (ThemeChoice::System, "System", icons::MONITOR),
             (ThemeChoice::Light, "light", icons::SUN),
             (ThemeChoice::Dark, "dark", icons::MOON),
+            (ThemeChoice::Gtk, "Desktop (GTK)", icons::PALETTE),
         ];
+        // Live preview of the desktop palette, independent of the active mode.
+        let gtk_preview = gtk_theme::palette();
         let mut cards: Vec<gpui::AnyElement> = Vec::new();
         for (choice, label, icon_name) in modes {
             let active = mode == choice.as_str();
@@ -783,7 +843,7 @@ impl SettingsState {
                         gpui::rgba(0x00000000)
                     })
                     .bg(if active {
-                        gpui::rgba(0x0078d40d)
+                        theme::accent_alpha(0x0d)
                     } else {
                         gpui::rgba(0x00000000)
                     })
@@ -816,15 +876,28 @@ impl SettingsState {
                             })
                             .children(match choice {
                                 ThemeChoice::System => vec![
-                                    div().flex_1().bg(theme::light::bg_primary()).into_any_element(),
-                                    div().flex_1().bg(theme::dark::bg_primary()).into_any_element(),
+                                    // Unconditional Win11 swatches: the previews must
+                                    // not follow the palette they are previewing.
+                                    div().flex_1().bg(theme::raw::light::bg_primary()).into_any_element(),
+                                    div().flex_1().bg(theme::raw::dark::bg_primary()).into_any_element(),
                                 ],
                                 ThemeChoice::Light => vec![
-                                    div().flex_1().bg(theme::light::bg_primary()).into_any_element(),
+                                    div().flex_1().bg(theme::raw::light::bg_primary()).into_any_element(),
                                 ],
                                 ThemeChoice::Dark => vec![
-                                    div().flex_1().bg(theme::dark::bg_primary()).into_any_element(),
+                                    div().flex_1().bg(theme::raw::dark::bg_primary()).into_any_element(),
                                 ],
+                                // Surfaces + accent from the live GTK theme.
+                                ThemeChoice::Gtk => match gtk_preview {
+                                    Some(p) => vec![
+                                        div().flex_1().bg(p.bg_primary).into_any_element(),
+                                        div().flex_1().bg(p.accent).into_any_element(),
+                                    ],
+                                    None => vec![
+                                        div().flex_1().bg(theme::raw::light::bg_primary()).into_any_element(),
+                                        div().flex_1().bg(theme::raw::dark::bg_primary()).into_any_element(),
+                                    ],
+                                },
                             }),
                     )
                     .child(
@@ -876,12 +949,71 @@ impl SettingsState {
                                     .w(px(6.))
                                     .h(px(6.))
                                     .rounded_full()
-                                    .bg(gpui::rgb(0xffffff))
+                                    .bg(theme::on_accent())
                             })),
                     )
                     .into_any_element(),
             );
         }
+        // Four cards no longer fit one 368px row: lay them out 2×2.
+        let mut rows: Vec<gpui::AnyElement> = Vec::new();
+        let mut rest = cards.into_iter();
+        loop {
+            let row: Vec<gpui::AnyElement> = rest.by_ref().take(2).collect();
+            if row.is_empty() {
+                break;
+            }
+            rows.push(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(px(16.))
+                    .children(row)
+                    .into_any_element(),
+            );
+        }
+        let theme_grid = div().flex().flex_col().gap(px(16.)).children(rows);
+        // Under the cards: which GTK theme is driving the colors, or why it is
+        // not (headless / no GTK theme / tray-less start).
+        let muted = if is_dark {
+            theme::gray::g400()
+        } else {
+            theme::gray::g500()
+        };
+        let theme_hint = if self.theme_fallback() {
+            Some(
+                div()
+                    .text_size(px(10.5))
+                    .text_color(muted)
+                    .child(
+                        "GTK theme not detected - using the system light/dark preference."
+                            .to_string(),
+                    )
+                    .into_any_element(),
+            )
+        } else if mode == "gtk" {
+            // Name the actual source: the user's own CSS often disagrees with
+            // the theme `gtk-theme` names (e.g. WhiteSur-Dark while the desktop
+            // renders Tokyo Night from ~/.config/gtk-4.0).
+            let text = if gtk_theme::user_css_active() {
+                "Following your GTK config (colors.css / gtk.css).".to_string()
+            } else {
+                match gtk_theme::cached_name() {
+                    Some(name) => format!("Following the {name} GTK theme."),
+                    None => "Following the desktop GTK theme.".to_string(),
+                }
+            };
+            Some(
+                div()
+                    .text_size(px(10.5))
+                    .text_color(muted)
+                    .child(text)
+                    .into_any_element(),
+            )
+        } else {
+            None
+        };
+
         let tray_on = settings.enable_dynamic_tray_icon;
         let focus_on = settings.close_on_focus_loss;
         self.card(
@@ -896,7 +1028,8 @@ impl SettingsState {
                         .flex()
                         .flex_col()
                         .gap(px(20.))
-                        .child(div().flex().flex_row().gap(px(16.)).children(cards))
+                        .child(theme_grid)
+                        .children(theme_hint)
                         .child(
                             div()
                                 .flex()
@@ -985,8 +1118,11 @@ impl SettingsState {
             pills.push(
                 div()
                     .id(("autodelete-unit", i))
-                    .flex_1()
-                    .py(px(10.))
+                    // Intrinsic width: stretched pills clipped "minutes" in the
+                    // old 50/50 split, and a label + control row reads better.
+                    .flex_shrink_0()
+                    .px(px(11.))
+                    .py(px(8.))
                     .rounded(px(8.))
                     .border_1()
                     .border_color(if active {
@@ -1005,7 +1141,7 @@ impl SettingsState {
                     })
                     .text_size(px(10.5))
                     .text_color(if active {
-                        gpui::rgb(0xffffff)
+                        theme::on_accent()
                     } else if is_dark {
                         theme::gray::g400()
                     } else {
@@ -1043,21 +1179,31 @@ impl SettingsState {
                         .p(px(24.))
                         .flex()
                         .flex_col()
-                        .gap(px(16.))
+                        .gap(px(14.))
+                        // Two label + control rows, matching the toggle rows in
+                        // the other cards. The old 50/50 split squeezed the unit
+                        // pills until "minutes" no longer fit.
                         .child(
                             div()
                                 .flex()
                                 .flex_row()
+                                .items_center()
+                                .justify_between()
                                 .gap(px(16.))
                                 .child(
-                                    div().flex_1().flex().flex_col().gap(px(8.))
-                                        .child(
-                                            div()
-                                                .text_size(px(10.5))
-                                                .ml(px(4.))
-                                                .opacity(0.6)
-                                                .child("Time value"),
-                                        )
+                                    div()
+                                        .text_size(px(10.5))
+                                        .text_color(if is_dark {
+                                            theme::gray::g400()
+                                        } else {
+                                            theme::gray::g500()
+                                        })
+                                        .child("Time value"),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(120.))
+                                        .flex_shrink_0()
                                         .child(self.autodelete_input.render(
                                             "autodelete-input",
                                             "0 (Disabled)",
@@ -1066,30 +1212,48 @@ impl SettingsState {
                                             cx,
                                             |s| &mut s.autodelete_input,
                                         )),
-                                )
-                                .child(
-                                    div().flex_1().flex().flex_col().gap(px(8.))
-                                        .child(
-                                            div()
-                                                .text_size(px(10.5))
-                                                .ml(px(4.))
-                                                .opacity(0.6)
-                                                .child("Time unit"),
-                                        )
-                                        .child(
-                                            div().flex().flex_row().gap(px(8.)).children(pills),
-                                        ),
                                 ),
                         )
                         .child(
                             div()
-                                .p(px(12.))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(16.))
+                                .child(
+                                    div()
+                                        .text_size(px(10.5))
+                                        .text_color(if is_dark {
+                                            theme::gray::g400()
+                                        } else {
+                                            theme::gray::g500()
+                                        })
+                                        .child("Time unit"),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .gap(px(6.))
+                                        .flex_shrink_0()
+                                        .children(pills),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .px(px(12.))
+                                .py(px(8.))
                                 .rounded(px(8.))
                                 .border_1()
-                                .border_color(gpui::rgba(0x0078d41a))
-                                .bg(gpui::rgba(0x0078d40d))
+                                .border_color(theme::accent_alpha(0x1a))
+                                .bg(theme::accent_alpha(0x0d))
                                 .text_size(px(11.))
-                                .opacity(0.7)
+                                .text_color(if is_dark {
+                                    theme::gray::g400()
+                                } else {
+                                    theme::gray::g600()
+                                })
                                 .child(if interval == 0 {
                                     "Auto-delete is currently disabled.".to_string()
                                 } else {
@@ -1139,7 +1303,7 @@ impl SettingsState {
                         .gap(px(12.))
                         .text_size(px(12.25))
                         .bg(if is_dark {
-                            gpui::rgba(0xfcb9001a)
+                            theme::warning_alpha(0x1a)
                         } else {
                             theme::tint::amber50()
                         })
@@ -1420,7 +1584,7 @@ impl SettingsState {
                             .opacity(0.0)
                             .group_hover(group, |s| s.opacity(1.0))
                             .text_color(theme::tint::red500())
-                            .hover(|s| s.bg(gpui::rgba(0xef44441a)))
+                            .hover(|s| s.bg(theme::tint::red500_alpha(0x1a)))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.kaomoji_remove(idx, cx);
                             }))
@@ -1461,7 +1625,7 @@ impl SettingsState {
                                         .py(px(8.))
                                         .rounded(px(6.))
                                         .bg(theme::accent())
-                                        .text_color(gpui::rgb(0xffffff))
+                                        .text_color(theme::on_accent())
                                         .text_size(px(12.25))
                                         .cursor_pointer()
                                         .flex()
@@ -1686,7 +1850,7 @@ impl SettingsState {
                                 .items_center()
                                 .gap(px(8.))
                                 .text_size(px(12.25))
-                                .text_color(gpui::rgb(0x22c55e))
+                                .text_color(theme::tint::green500())
                                 .child(icon(icons::CHECK, px(16.)).flex_shrink_0())
                                 .child(msg)
                                 .into_any_element(),
@@ -1694,7 +1858,7 @@ impl SettingsState {
                                 .p(px(12.))
                                 .rounded(px(8.))
                                 .bg(if is_dark {
-                                    gpui::rgba(0xef44441a)
+                                    theme::tint::red500_alpha(0x1a)
                                 } else {
                                     theme::tint::red50()
                                 })
@@ -1721,7 +1885,7 @@ impl SettingsState {
                                 .py(px(10.))
                                 .rounded(px(8.))
                                 .bg(theme::accent())
-                                .text_color(gpui::rgb(0xffffff))
+                                .text_color(theme::on_accent())
                                 .text_size(px(12.25))
                                 .cursor_pointer()
                                 .hover(|s| s.opacity(0.9))
@@ -1762,7 +1926,7 @@ impl SettingsState {
                     .hover(|s| {
                         let s = s.text_color(theme::tint::red500());
                         if is_dark {
-                            s.bg(gpui::rgba(0xef44441a))
+                            s.bg(theme::tint::red500_alpha(0x1a))
                         } else {
                             s.bg(theme::tint::red50())
                         }

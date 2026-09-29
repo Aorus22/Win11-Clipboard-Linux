@@ -67,6 +67,8 @@ pub const ALERT_CIRCLE: &str = "alert-circle";
 pub const COPY: &str = "copy";
 pub const ZAP: &str = "zap";
 pub const SETTINGS_GEAR: &str = "settings-gear";
+/// Appearance card: follow the desktop (GTK) theme colors.
+pub const PALETTE: &str = "palette";
 
 #[cfg(test)]
 mod tests {
@@ -112,6 +114,7 @@ mod tests {
         COPY,
         ZAP,
         SETTINGS_GEAR,
+        PALETTE,
     ];
 
     fn icons_dir() -> std::path::PathBuf {

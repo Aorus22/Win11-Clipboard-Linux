@@ -24,6 +24,7 @@ mod click_watch;
 mod drag_log;
 mod geometry;
 mod gnome_shortcut;
+mod gtk_theme;
 mod history;
 mod hotkey;
 mod instance;
@@ -293,6 +294,11 @@ fn popup_options(origin: (f32, f32), w: f32, h: f32) -> WindowOptions {
 }
 
 fn centered_options(w: f32, h: f32, title: &'static str, cx: &App) -> WindowOptions {
+    // `w`/`h` are the visible card AND the window's frame: mutter grows the
+    // client by the `_GTK_FRAME_EXTENTS` we advertise for it (verified live:
+    // extents e => client = requested + 2e), and that growth is exactly the
+    // transparent margin the root paints its shadow into. Asking for the card
+    // plus that margin here would therefore double it.
     let bounds = Bounds::centered(None, gpui::size(px(w), px(h)), cx);
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -301,6 +307,10 @@ fn centered_options(w: f32, h: f32, title: &'static str, cx: &App) -> WindowOpti
         // views then draw `ui::titlebar` (min/max/close + drag) to fill the gap
         // when it answers `Decorations::Client` instead.
         window_decorations: Some(WindowDecorations::Client),
+        // ARGB window, exactly like the popup: the roots round their own corners
+        // and let the desktop show through them, so a Settings/Wizard window sits
+        // on the desktop like a native GNOME one instead of a square slab.
+        window_background: gpui::WindowBackgroundAppearance::Transparent,
         // Window title: X11 takes it from here, Wayland via `set_window_title`.
         titlebar: Some(gpui::TitlebarOptions {
             title: Some(title.into()),
@@ -449,7 +459,37 @@ fn open_settings_window(
         state.focus.focus(window);
         cx.notify();
     });
+    let scale = handle
+        .update(cx, |_, window, _| window.scale_factor())
+        .unwrap_or(1.0);
+    advertise_csd_frame("Settings — Clipboard History", scale);
     handle
+}
+
+/// Tell the compositor where the visible frame of a CSD window sits.
+///
+/// `_GTK_FRAME_EXTENTS` is what makes mutter treat the window's *inset frame*
+/// as the frame instead of its rectangle, which is what stops its own square
+/// shadow from showing through the transparent rounded corners (we paint our
+/// own shadow into that same margin — see `theme::WINDOW_SHADOW_MARGIN`).
+///
+/// Retried in the background: the view is handed back before its X window
+/// exists, and the property is also allowed to arrive after the map (mutter
+/// recomputes on PropertyNotify). Failures are non-fatal — on native Wayland
+/// there simply is no X window to set it on.
+fn advertise_csd_frame(title: &'static str, scale_factor: f32) {
+    std::thread::spawn(move || {
+        // `_GTK_FRAME_EXTENTS` is in device pixels (GTK sets it scaled too);
+        // gpui's logical margin has to be scaled for the compositor.
+        let margin = (theme::WINDOW_SHADOW_MARGIN * scale_factor).round() as u32;
+        for _ in 0..40 {
+            if window_drag::set_frame_extents(title, margin).is_ok() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        eprintln!("[gpui-app] could not advertise _GTK_FRAME_EXTENTS for {title:?}");
+    });
 }
 
 fn open_wizard_window(
@@ -474,6 +514,10 @@ fn open_wizard_window(
         state.focus.focus(window);
         cx.notify();
     });
+    let scale = handle
+        .update(cx, |_, window, _| window.scale_factor())
+        .unwrap_or(1.0);
+    advertise_csd_frame("Setup — Clipboard History", scale);
     handle
 }
 
@@ -580,9 +624,19 @@ fn main() {
         _ => Tab::Clipboard,
     };
 
+    // GTK must initialize on the main thread before the AppIndicator tray backend
+    // — and before the theme resolver, which reads the active GTK theme's colors.
+    let gtk_ok = gtk_theme::init();
+
     let settings = settings::load();
+    let resolved = theme::resolve(&settings);
+    // Warm the GTK palette cache even outside GTK mode so the Appearance card can
+    // preview the desktop theme before the user picks it.
+    if gtk_ok {
+        let _ = gtk_theme::palette();
+    }
     let backend = BackendService::new(&settings);
-    let shared = app_state::shared(settings);
+    let shared = app_state::shared(settings, resolved);
 
     eprintln!(
         "[gpui-app] loaded {} history items from {}",
@@ -605,22 +659,22 @@ fn main() {
     // cannot tell a hover from a click.
     click_watch::spawn_click_watcher(shared.clone());
 
-    // GTK must initialize on the main thread before the AppIndicator tray backend.
-    let mut tray = match gtk::init() {
-        Ok(()) => {
-            let s = shared.lock().settings.clone();
-            match tray::Tray::build(s.enable_dynamic_tray_icon, settings::resolve_dark(&s)) {
-                Ok(t) => Some(t),
-                Err(e) => {
-                    eprintln!("[gpui-app] tray unavailable: {e}");
-                    None
-                }
+    // GTK is up (or not) at this point; the tray backend needs it and nothing else
+    // runs a gtk main loop, so the poll loop below pumps its idle callbacks.
+    let mut tray = if gtk_ok {
+        let (dynamic_tray, dark) = {
+            let guard = shared.lock();
+            (guard.settings.enable_dynamic_tray_icon, guard.theme.is_dark)
+        };
+        match tray::Tray::build(dynamic_tray, dark) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                eprintln!("[gpui-app] tray unavailable: {e}");
+                None
             }
         }
-        Err(e) => {
-            eprintln!("[gpui-app] GTK unavailable, running without tray: {e:?}");
-            None
-        }
+    } else {
+        None
     };
 
     Application::new()
@@ -647,6 +701,10 @@ fn main() {
             // Tray + hotkeys live here (task-local): no cross-thread sharing.
             let hotkeys = hotkey::register_hotkeys();
             let mut last_theme_dark: Option<bool> = None;
+            // GTK theme name + dark preference; a swap can change every color
+            // without changing the D-Bus portal's color-scheme, so it is polled.
+            let mut last_gtk_key = gtk_theme::current_key();
+            let mut ticks: u64 = 0;
 
             cx.spawn(async move |cx| {
                 // Visible start (non-background launch) reuses the exact toggle
@@ -700,6 +758,18 @@ fn main() {
                     }
                     if let Some(hk) = hotkeys.as_ref() {
                         signals.extend(hk.poll());
+                    }
+                    // 2a. Desktop theme re-check (~1 s): the AppIndicator tray
+                    // needs GTK pumped on its own, so this stays cheap — two
+                    // property reads — and only reacts when the key changes.
+                    ticks = ticks.wrapping_add(1);
+                    if ticks % 20 == 0 {
+                        if let Some(key) = gtk_theme::current_key() {
+                            if Some(&key) != last_gtk_key.as_ref() {
+                                last_gtk_key = Some(key);
+                                signals.push(AppSignal::ThemeChanged);
+                            }
+                        }
                     }
                     // 2b. Hide requests from the popup view (focus loss, Escape,
                     // paste, close button): park the persistent window instead
@@ -841,18 +911,19 @@ fn main() {
                             AppSignal::Quit => std::process::exit(0),
                             AppSignal::ThemeChanged => {
                                 let st = shared.lock().settings.clone();
-                                let dark = match st.theme_mode.as_str() {
-                                    "dark" => true,
-                                    "light" => false,
-                                    _ => settings::system_prefers_dark(),
-                                };
-                                if last_theme_dark != Some(dark) {
-                                    last_theme_dark = Some(dark);
+                                let resolved = theme::resolve(&st);
+                                shared.lock().theme = resolved;
+                                // Always publish: a GTK theme swap can keep the
+                                // same darkness while every single color changes.
+                                shared.lock().version += 1;
+                                if last_theme_dark != Some(resolved.is_dark) {
+                                    last_theme_dark = Some(resolved.is_dark);
                                     if let Some(t) = tray.as_mut() {
-                                        t.rebuild_icon(st.enable_dynamic_tray_icon, dark);
+                                        t.rebuild_icon(st.enable_dynamic_tray_icon, resolved.is_dark);
                                     }
-                                    // Publish so the popup re-renders with the new theme.
-                                    shared.lock().version += 1;
+                                }
+                                if let Some(h) = settings_win.as_ref() {
+                                    let _ = h.update(cx, |_, _, cx| cx.notify());
                                 }
                             }
                         }

@@ -188,6 +188,83 @@ Super+V again (or click elsewhere) hides it.
 | Reset everything (fresh wizard) | `rm -rf ~/.config/win11-clipboard-history-gpui/` |
 | Uninstall (AppImage) | remove `~/Applications/win11-clipboard-history-gpui_*.AppImage`, `~/.local/share/applications/win11-clipboard-history-gpui.desktop`, hicolor icons; unbind Super+V via Settings → keyboard |
 
+### Themes (System / Light / Dark / Desktop-GTK)
+
+Settings → Appearance shows four cards; the choice is stored as `theme_mode`
+(`system` / `dark` / `light` / `gtk`) in `user_settings.json`.
+
+| Card | Colors come from |
+|---|---|
+| System | Win11 palette, dark or light following the XDG portal `color-scheme` |
+| Light / Dark | Win11 palette, pinned |
+| Desktop (GTK) | the active GTK/GNOME theme — full palette, not just dark/light |
+
+The Desktop card merges two sources, in this order of authority:
+
+1. **Your own GTK config** — `colors.css` / `gtk.css` in `gtk-4.0` (then `gtk-3.0`).
+   On GNOME the `gtk-theme` setting is only half the story: libadwaita 1.6+ apps
+   take their palette from `:root` custom properties in `~/.config/gtk-4.0/gtk.css`
+   (what palette tools such as Rewaita write), plus `@define-color` entries in the
+   `colors.css` next to it. If your `gtk-theme` still says `WhiteSur-Dark` while
+   every other app is Tokyo Night, it is these files that win.
+2. **The GTK3 style engine** — `gtk::StyleContext::lookup_color`
+   (`theme_bg_color`, `theme_base_color`, `theme_fg_color`,
+   `theme_selected_bg_color`, `borders`, `error_color`, `warning_color`,
+   `success_color`, `insensitive_fg_color`, …), the fallback for users with no
+   user CSS.
+
+Either way the result is mapped onto every app token, so surfaces, text,
+borders, accents and the semantic error/warning/success colors all follow the
+desktop palette. A caption under the cards names the detected GTK theme.
+
+- Changes are picked up live: the portal `color-scheme`/`accent-color` signal,
+  plus a ~1 s check of the GTK theme name **and the mtimes of your CSS files**, so
+  editing `gtk.css` repaints the app without a restart.
+- GTK unavailable (headless session, no GTK theme, no tray)? The card falls back
+  to the system light/dark preference and the grid says "GTK theme not detected".
+- System / Light / Dark are untouched by this: their colors are Win11 literals
+  (`theme::hex`) and are pinned by parity tests (`cargo test --manifest-path
+  gpui-app/Cargo.toml`).
+- Fonts, cursor and icon themes still come from the desktop independently — only
+  colors are affected.
+
+### Window chrome (rounded corners + outline)
+
+The Settings and Setup windows are created with an ARGB surface
+(`WindowBackgroundAppearance::Transparent`) and their root element is rounded by
+`theme::RADIUS_WINDOW` with a 1 px `border` outline, exactly like the popup. That
+makes them read as native GNOME windows (rounded, outlined) instead of square
+slabs that melt into the wallpaper, in every theme mode — Win11 included, whose
+own windows are rounded too.
+
+Chromeless sessions (gpui asked for client-side decorations) get the
+minimise/maximise/close buttons from `ui::titlebar::render_controls`, drawn
+absolutely into the top-right *corner* of the Settings header and over the
+wizard's corner. There is no separate 36 px title strip: the window opens on the
+"Personalization" heading, the subtitle keeps the full width, and the save pill
+floats in the same corner row so nothing squeezes the text.
+
+Shadow: X clients get theirs from the compositor, and mutter paints it around the
+window *rectangle* — with transparent rounded corners that square shadow shows
+through as a dark wedge behind each corner. So the windows do what GTK CSD does:
+
+- the root is wrapped in a `theme::WINDOW_SHADOW_MARGIN` (16 px) transparent
+  frame and paints its own shadow into it (`theme::window_shadow()`, a gpui box
+  shadow that follows the rounded corners);
+- `window_drag::set_frame_extents` sets `_GTK_FRAME_EXTENTS` on the X window
+  (found by title, retried in the background because the property may land after
+  the map). Mutter then treats the inset frame as the window body and drops its
+  own square shadow.
+
+`_GTK_FRAME_EXTENTS` is in **device pixels** (GTK scales it too), so the logical
+margin is multiplied by the window's scale factor. Mutter also *grows* the client
+by the advertised extents (verified live: extents `e` ⇒ client = requested +
+2e), which is where the margin comes from — so `centered_options` asks for the
+card size alone and the painted card lands exactly on the frame. Anything that
+maps window coordinates to view-local ones (the sliders) subtracts the margin.
+The popup needs none of this: it is an override-redirect window, so no
+compositor shadow or frame exists around it — it only shares the 1 px outline.
+
 ### Runtime env vars
 
 | Var | Effect |

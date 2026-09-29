@@ -21,7 +21,7 @@ use crate::app_state::Shared;
 use crate::backend::BackendService;
 use crate::history::{ClipboardItem, filter_history};
 use crate::pickers::{Emoji, Kaomoji, SymbolItem};
-use crate::settings::{AppSettings, config_dir, resolve_dark};
+use crate::settings::{AppSettings, config_dir};
 use crate::theme;
 use win11_clipboard_history_lib::focus_manager;
 
@@ -141,7 +141,10 @@ impl Popup {
         initial_tab: Tab,
         cx: &mut Context<Self>,
     ) -> Self {
-        let is_dark = resolve_dark(&settings);
+        // Resolve + install the palette (GTK mode may read the desktop theme).
+        let resolved = theme::resolve(&settings);
+        shared.lock().theme = resolved;
+        let is_dark = resolved.is_dark;
         let items = backend.snapshot();
         let version = backend.version();
         let ui = load_ui_state();
@@ -332,7 +335,11 @@ impl Popup {
         if sversion != self.last_settings_version {
             self.last_settings_version = sversion;
             let settings = self.shared.lock().settings.clone();
-            self.is_dark = resolve_dark(&settings);
+            // Re-resolve so a live theme switch (including GTK swaps pushed by
+            // the main loop) is reflected in this persistent window.
+            let resolved = theme::resolve(&settings);
+            self.shared.lock().theme = resolved;
+            self.is_dark = resolved.is_dark;
             self.settings = settings;
             self.last_settings_mtime = crate::settings::settings_mtime();
             changed = true;
@@ -342,7 +349,9 @@ impl Popup {
             let settings = crate::settings::load();
             self.backend
                 .set_max_history_size(settings.max_history_size);
-            self.is_dark = resolve_dark(&settings);
+            let resolved = theme::resolve(&settings);
+            self.shared.lock().theme = resolved;
+            self.is_dark = resolved.is_dark;
             self.settings = settings.clone();
             let mut guard = self.shared.lock();
             guard.settings = settings;
@@ -970,7 +979,16 @@ impl Render for Popup {
             .flex_col()
             .size_full()
             .overflow_hidden()
-            .rounded(px(12.))
+            .rounded(px(theme::RADIUS_WINDOW))
+            // Same 1px outline as the Settings/Setup windows: with no
+            // compositor shadow on this surface it is what separates the
+            // popup from whatever is behind it.
+            .border_1()
+            .border_color(if is_dark {
+                theme::dark::border()
+            } else {
+                theme::light::border()
+            })
             .bg(if is_dark {
                 theme::dark::acrylic(opacity)
             } else {
@@ -1411,9 +1429,9 @@ fn render_drag_strip(is_dark: bool, cx: &mut Context<Popup>) -> impl IntoElement
                 .rounded_full()
                 .cursor_grab()
                 .bg(if is_dark {
-                    gpui::rgba(0xffffff33)
+                    theme::white_pct(0.20)
                 } else {
-                    gpui::rgba(0x00000033)
+                    theme::black_pct(0.20)
                 }),
         )
         .child(
@@ -1427,9 +1445,9 @@ fn render_drag_strip(is_dark: bool, cx: &mut Context<Popup>) -> impl IntoElement
                 .rounded(px(6.))
                 .cursor_pointer()
                 .text_color(if is_dark {
-                    gpui::rgba(0xffffff80)
+                    theme::white_pct(0.50)
                 } else {
-                    gpui::rgba(0x00000080)
+                    theme::black_pct(0.50)
                 })
                 .on_mouse_down(
                     gpui::MouseButton::Left,

@@ -256,7 +256,7 @@ impl SearchState {
         focused: bool,
     ) -> impl IntoElement {
         // Selection wash: accent at ~30%.
-        let selected = gpui::rgba(0x0078d44d);
+        let selected = theme::accent_alpha(0x4d);
         let caret = || div().w(px(1.5)).h(px(15.)).bg(theme::accent());
         let base = div()
             .flex_1()
@@ -365,7 +365,7 @@ fn regex_button(
         .rounded(px(4.))
         .cursor_pointer()
         .bg(if regex_mode {
-            gpui::rgba(0x0078d422)
+            theme::accent_alpha(0x22)
         } else {
             gpui::rgba(0x00000000)
         })
@@ -376,7 +376,7 @@ fn regex_button(
         })
         .hover(move |s| {
             s.bg(if regex_mode {
-                gpui::rgba(0x0078d422)
+                theme::accent_alpha(0x22)
             } else {
                 hover_bg
             })

@@ -16,8 +16,9 @@ use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
-    AtomEnum, ConfigureWindowAux, ConnectionExt, KeyButMask, MapState,
+    AtomEnum, ConfigureWindowAux, ConnectionExt, KeyButMask, MapState, PropMode,
 };
+use x11rb::wrapper::ConnectionExt as _;
 use x11rb::rust_connection::RustConnection;
 
 /// How often the drag loop repositions the window (≈60 Hz).
@@ -510,4 +511,112 @@ fn window_pid(conn: &RustConnection, net_wm_pid: u32, window: u32) -> Option<u32
         .ok()?;
     let first = reply.value32()?.next()?;
     Some(first)
+}
+
+/// Advertise a GTK-style client-side frame to the compositor.
+///
+/// Sets `_GTK_FRAME_EXTENTS = [margin; 4]` on the window whose title matches
+/// `title` (this process only). Mutter reads the property as "the visible frame
+/// is inset from the window rectangle by this much", which is what makes it
+/// place and shadow the window like a GTK CSD window instead of twinning our
+/// rounded, transparent corners with the shadow of a square rectangle.
+///
+/// Used by Settings/Setup, which reserve exactly that margin for their own
+/// painted shadow (`theme::WINDOW_SHADOW_MARGIN`).
+pub fn set_frame_extents(title: &str, margin: u32) -> Result<(), String> {
+    let (conn, root) = connect_root()?;
+    let window = locate_window_by_title(&conn, root, title)?;
+    let gtk_frame_extents = conn
+        .intern_atom(false, b"_GTK_FRAME_EXTENTS")
+        .map_err(|error| format!("intern_atom error: {error}"))?
+        .reply()
+        .map_err(|error| format!("intern_atom reply: {error}"))?
+        .atom;
+    conn.change_property32(
+        PropMode::REPLACE,
+        window,
+        gtk_frame_extents,
+        AtomEnum::CARDINAL,
+        &[margin; 4],
+    )
+    .map_err(|error| format!("ChangeProperty error: {error}"))?
+    .check()
+    .map_err(|error| format!("ChangeProperty rejected: {error}"))?;
+    conn.flush()
+        .map_err(|error| format!("flush error: {error}"))?;
+    Ok(())
+}
+
+/// Find one of this process's windows by its `_NET_WM_NAME` / `WM_NAME`.
+///
+/// Title matching (rather than the popup locator's WM_CLASS + size) is what
+/// lets Settings and Setup be told apart while both are open, and it survives
+/// the size change that comes with the shadow margin.
+fn locate_window_by_title(
+    conn: &RustConnection,
+    root: u32,
+    title: &str,
+) -> Result<u32, String> {
+    let tree = conn
+        .query_tree(root)
+        .map_err(|error| format!("query_tree error: {error}"))?
+        .reply()
+        .map_err(|error| format!("query_tree reply: {error}"))?;
+    let net_wm_pid = conn
+        .intern_atom(false, b"_NET_WM_PID")
+        .map_err(|error| format!("intern_atom error: {error}"))?
+        .reply()
+        .map_err(|error| format!("intern_atom reply: {error}"))?
+        .atom;
+    let candidates = tree
+        .children
+        .iter()
+        .map(|window| format!("{window:#x}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    for window in tree.children {
+        if window_pid(conn, net_wm_pid, window) != Some(std::process::id()) {
+            continue;
+        }
+        if window_name(conn, window).as_deref() == Some(title) {
+            return Ok(window);
+        }
+    }
+    Err(format!(
+        "no window titled {title:?} among this pid's windows ({candidates})"
+    ))
+}
+
+/// `_NET_WM_NAME` (UTF8_STRING), falling back to the legacy `WM_NAME`.
+fn window_name(conn: &RustConnection, window: u32) -> Option<String> {
+    let utf8 = || -> Option<String> {
+        let atom = conn
+            .intern_atom(false, b"UTF8_STRING")
+            .ok()?
+            .reply()
+            .ok()?
+            .atom;
+        let net_wm_name = conn
+            .intern_atom(false, b"_NET_WM_NAME")
+            .ok()?
+            .reply()
+            .ok()?
+            .atom;
+        let reply = conn
+            .get_property(false, window, net_wm_name, atom, 0, 512)
+            .ok()?
+            .reply()
+            .ok()?;
+        (reply.type_ == atom && !reply.value.is_empty())
+            .then(|| String::from_utf8_lossy(&reply.value).into_owned())
+    };
+    utf8().or_else(|| {
+        let reply = conn
+            .get_property(false, window, AtomEnum::WM_NAME, AtomEnum::STRING, 0, 512)
+            .ok()?
+            .reply()
+            .ok()?;
+        (reply.type_ == u32::from(AtomEnum::STRING) && !reply.value.is_empty())
+            .then(|| String::from_utf8_lossy(&reply.value).into_owned())
+    })
 }
