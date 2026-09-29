@@ -48,6 +48,7 @@ Paritas penuh versi Tauri dalam GPUI Rust, tampilan 1:1 identik. React/Tauri tet
 - [ ] **SYS-04**: App theme follows the system theme via the existing XDG portal listener
 - [ ] **SYS-05**: Clipboard monitoring captures text / rich-text / image on X11 and Wayland via the reused backend
 - [ ] **SYS-06**: User can run the GPUI build alongside the Tauri build without shortcut, clipboard, or config conflicts (coexistence policy decided in plan-phase)
+- [ ] **SYS-07**: User can pick a **Desktop (GTK)** theme card that adopts the full active GTK theme palette (surfaces, text, borders, accent, error/warning/success), updates live when the desktop theme changes, and falls back to the system light/dark preference with a visible note when no GTK theme can be read
 
 ### Packaging (PKG)
 
@@ -105,15 +106,16 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SYS-04 | Phase 5 | Pending |
 | SYS-05 | Phase 5 | Complete |
 | SYS-06 | Phase 1 | Complete |
+| SYS-07 | Phase 5 | In Progress |
 | PKG-01 | Phase 5 | Pending |
 | PKG-02 | Phase 5 | Complete |
 | PKG-03 | Phase 1 | Complete |
 
 **Coverage:**
-- v0.8.0 requirements: 30 total
-- Mapped to phases: 30
+- v0.8.0 requirements: 31 total
+- Mapped to phases: 31
 - Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-09-08*
-*Last updated: 2026-09-08 after initial definition*
+*Last updated: 2026-09-29 — added SYS-07 (Desktop/GTK theme card)*

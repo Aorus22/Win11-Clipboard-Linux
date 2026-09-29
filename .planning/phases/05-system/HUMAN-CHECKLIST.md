@@ -33,7 +33,12 @@ GPUI_SMOKE_TAB=kaomoji  cargo run --manifest-path gpui-app/Cargo.toml
 
 ## Settings (SET)
 
-- [ ] Personalization header + Saved pill; 3 theme cards switch the popup live
+- [ ] Personalization header + Saved pill; 4 theme cards (System / Light / Dark / Desktop-GTK) in a 2×2 grid switch the popup live
+- [ ] **Desktop (GTK)** card adopts the full desktop palette (bg, text, borders, accent, error/warning/success) — not just dark/light. Check it against a machine whose look comes from `~/.config/gtk-4.0/colors.css` + `gtk.css` (Rewaita/palette tools) even when `gtk-theme` names a different theme, and the caption under the grid names the detected GTK theme
+- [ ] With the GTK card active, editing `~/.config/gtk-4.0/gtk.css` repaints the app within ~1s (no restart)
+- [ ] The GTK card preview shows the live desktop colors; System/Light/Dark previews stay Win11 blue/gray
+- [ ] With the GTK card active, changing the GNOME theme (or `gsettings set org.gnome.desktop.interface color-scheme prefer-dark`) repaints the popup within ~1s
+- [ ] No GTK theme reachable (headless) → GTK card falls back to system light/dark and the grid shows the "GTK theme not detected" note
 - [ ] Auto-delete value + unit pills + info line
 - [ ] Both opacity sliders drag smoothly and change the popup live
 - [ ] UI scale slider (window resizes; content zoom is a known delta)
