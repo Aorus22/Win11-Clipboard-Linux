@@ -1441,14 +1441,10 @@ fn render_drag_strip(is_dark: bool, cx: &mut Context<Popup>) -> impl IntoElement
                 .right(px(16.))
                 .top(px(8.))
                 .p(px(4.))
-                .pt(px(20.))
-                .rounded(px(6.))
+                // Keeps the glyph where it has always sat while the visible
+                // circle below is centred on it.
+                .pt(px(16.))
                 .cursor_pointer()
-                .text_color(if is_dark {
-                    theme::white_pct(0.50)
-                } else {
-                    theme::black_pct(0.50)
-                })
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(|_, _, _, cx| {
@@ -1460,7 +1456,26 @@ fn render_drag_strip(is_dark: bool, cx: &mut Context<Popup>) -> impl IntoElement
                     let _ = focus_manager::restore_focused_window();
                     cx.notify();
                 }))
-                .child(icon(icons::X, px(20.)).flex_shrink_0()),
+                .child(
+                    // Round hit-friendly bubble: same close-hover red as the
+                    // Settings window's control, so hovering it reads as the
+                    // same "active" state.
+                    div()
+                        .id("drag-close-bubble")
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(px(28.))
+                        .h(px(28.))
+                        .rounded_full()
+                        .text_color(if is_dark {
+                            theme::white_pct(0.50)
+                        } else {
+                            theme::black_pct(0.50)
+                        })
+                        .hover(|s| s.bg(theme::close_hover()).text_color(theme::on_accent()))
+                        .child(icon(icons::X, px(16.)).flex_shrink_0()),
+                ),
         )
 }
 
