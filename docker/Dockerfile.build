@@ -47,6 +47,18 @@ RUN apt-get update \
       squashfs-tools \
  && rm -rf /var/lib/apt/lists/*
 
+# sccache — compiler cache so rebuilds skip unchanged crates. Installed via
+# cargo (slow once, then cached as an image layer by CI's GHA layer cache).
+# The cache directory itself is mounted from the host at run time and persisted
+# across CI runs by actions/cache (see the workflow); RUSTC_WRAPPER is exported
+# by docker/build-appimage.sh so both cargo invocations share it.
+RUN cargo install sccache --locked \
+ && rm -rf /usr/local/cargo/registry \
+ && sccache --version
+
+ENV SCCACHE_CACHE_SIZE=2G \
+    SCCACHE_DIR=/root/.cache/sccache
+
 # Pin the two AppImage helpers into the image instead of letting the build fetch
 # them from GitHub mid-run. The GPUI repo script downloads through
 # LINUXDEPLOY_URL / APPIMAGETOOL_URL and runs each tool with

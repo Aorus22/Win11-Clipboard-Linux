@@ -31,8 +31,18 @@ Useful mounts to keep caches warm between runs (all optional):
 docker run --rm -v "$PWD:/src" -w /src \
   -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
   -v "$HOME/.cargo/git:/usr/local/cargo/git" \
+  -v "$HOME/.cache/sccache:/root/.cache/sccache" \
   winclip-build bash docker/build-appimage.sh
 ```
+
+Two cache layers make repeat builds fast:
+
+1. **Image layers** — CI builds the image with Buildx + `type=gha` cache, so
+   the apt/toolchain/sccache layers are skipped when `Dockerfile.build` and
+   friends are unchanged.
+2. **Compilation** — `RUSTC_WRAPPER=sccache` reuses cached crates across runs;
+   `docker/build-appimage.sh` prints hit/miss stats at the end. The cache dir
+   (`~/.cache/sccache`, 2 GB cap) is persisted by CI via `actions/cache`.
 
 Running as the host user instead of root keeps `target/` and `dist/` writable
 for your own `cargo` afterwards:

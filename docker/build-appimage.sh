@@ -19,6 +19,14 @@ DIST_DIR="${ROOT_DIR}/dist"
 
 cd "${ROOT_DIR}"
 
+# Route rustc through sccache so rebuilds reuse cached crates. The cache dir
+# comes from a host mount (CI persists it via actions/cache); without the mount
+# sccache just runs uncached — never a failure.
+export RUSTC_WRAPPER="${RUSTC_WRAPPER:-sccache}"
+if command -v sccache >/dev/null; then
+    sccache --zero-stats >/dev/null 2>&1 || true
+fi
+
 echo "[1/2] Building GPUI AppImage..."
 bash "${ROOT_DIR}/scripts/build-gpui-appimage.sh"
 # The helper tools come from the image via the LINUXDEPLOY_URL /
@@ -43,3 +51,8 @@ fi
 echo
 echo "Done. Artifacts:"
 ls -la "${DIST_DIR}"/*.AppImage
+
+if command -v sccache >/dev/null; then
+    echo
+    sccache --show-stats || true
+fi
