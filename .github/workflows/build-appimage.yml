@@ -12,12 +12,13 @@ name: Build AppImage
 #   dist/SHA256SUMS.txt
 #
 # What each run gets:
-#   push main / v* tag / PR -> build only, Actions artifact (nothing is published)
-#   manual dispatch          -> build + publish to the given tag in Releases
+#   manual dispatch            -> build, Actions artifact
+#   manual dispatch + publish  -> build + publish to the given tag in Releases
 #
-# Invoke explicitly from the Actions tab ("Run workflow") with a tag:
-#   latest         -> rolling release, stable download URL
-#   vX.Y.Z         -> versioned release (tag is created if missing)
+# Nothing here runs automatically. Invoke explicitly from the Actions tab
+# ("Run workflow") with a tag and the publish checkbox:
+#   latest + publish   -> rolling release, stable download URL
+#   vX.Y.Z + publish   -> versioned release (tag is created if missing)
 #
 # The rolling release keeps a stable download URL:
 #   https://github.com/<owner>/<repo>/releases/download/latest/win11-clipboard-history_<version>_amd64.AppImage
@@ -25,17 +26,17 @@ name: Build AppImage
 # No `paths:` filter on purpose: a `v*` tag push must always produce a release.
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
     inputs:
       tag:
         description: 'Release tag to publish to (latest = rolling, vX.Y.Z = versioned)'
         required: true
         default: 'latest'
+      publish:
+        description: 'Publish the built AppImages to Releases'
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -114,11 +115,12 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # Published ONLY on explicit manual dispatch — never automatically.
-      # Pick the tag in the Actions tab ("Run workflow"): `latest` for the
-      # rolling release, `vX.Y.Z` for a versioned one (created if missing).
+      # Published ONLY on explicit manual dispatch with publish ticked —
+      # never automatically. Pick the tag in the Actions tab ("Run workflow"):
+      # `latest` for the rolling release, `vX.Y.Z` for a versioned one
+      # (created if missing).
       - name: Publish release
-        if: github.event_name == 'workflow_dispatch'
+        if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}

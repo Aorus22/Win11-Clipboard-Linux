@@ -55,8 +55,8 @@ smaller footprint, and faster startup.
 
 What this fork adds on top of upstream:
 
-- A portable **AppImage** of the GPUI client, rebuilt by CI on every push to
-  `main` and published to a rolling `latest` release.
+- A portable **AppImage** of the GPUI client, built by a manually-triggered CI
+  workflow and published to a rolling `latest` release.
 - A reproducible **Docker builder image** so local builds use the exact same
   toolchain as CI.
 
@@ -99,11 +99,11 @@ On first run the app shows a Setup Wizard to configure shortcuts and permissions
 <details>
 <summary><b>AppImage — any distro (recommended)</b></summary>
 
-CI rebuilds the AppImage on every push to `main` via the
+The AppImage is built by the
 [`build-appimage`](https://github.com/Aorus22/Win11-Clipboard-Linux/actions/workflows/build-appimage.yml)
-workflow. Publishing to Releases is manual: run the workflow from the Actions
-tab with a tag (`latest` for the rolling release, `vX.Y.Z` for a versioned
-one). Versioned tags (e.g. `v0.7.1`) get their own release page with the same assets.
+workflow, which only runs manually: open it from the Actions tab with a tag
+(`latest` for the rolling release, `vX.Y.Z` for a versioned one) and tick
+publish. Versioned tags (e.g. `v0.7.1`) get their own release page with the same assets.
 
 ```bash
 chmod +x win11-clipboard-history_*.AppImage
