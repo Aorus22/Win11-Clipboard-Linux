@@ -103,7 +103,7 @@ The AppImage is built by the
 [`build-appimage`](https://github.com/Aorus22/Win11-Clipboard-Linux/actions/workflows/build-appimage.yml)
 workflow, which only runs manually: open it from the Actions tab with a tag
 (`latest` for the rolling release, `vX.Y.Z` for a versioned one) and tick
-publish. Versioned tags (e.g. `v0.7.1`) get their own release page with the same assets.
+publish. Versioned tags (e.g. `v0.9.0`) get their own release page with the same assets.
 
 ```bash
 chmod +x win11-clipboard-history_*.AppImage
