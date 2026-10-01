@@ -1,26 +1,14 @@
-<div align="center">
-
-<img width="52" height="52" alt="logo" src="https://github.com/user-attachments/assets/4534e915-5d83-45f3-9f09-48a0f94b1d9a" />
-
-
 # Win11 Clipboard for Linux
 
 [Releases](https://github.com/Aorus22/Win11-Clipboard-Linux/releases) • [Report Bug](https://github.com/Aorus22/Win11-Clipboard-Linux/issues) • [Actions](https://github.com/Aorus22/Win11-Clipboard-Linux/actions)
 
 **The aesthetic, feature-rich clipboard manager your Linux desktop deserves.**
 
-[![License](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/Aorus22/Win11-Clipboard-Linux?style=for-the-badge&logo=github)](https://github.com/Aorus22/Win11-Clipboard-Linux/releases)
-[![Tauri](https://img.shields.io/badge/Built_With-Tauri_v2-24C8D6?style=for-the-badge&logo=tauri&logoColor=white)](https://tauri.app/)
-[![Rust](https://img.shields.io/badge/Powered_By-Rust-000000?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
-
-![App Screenshot](https://github.com/user-attachments/assets/74400c8b-9d7d-49ce-8de7-45dfd556e256)
-
-</div>
+MIT licensed. Built with Tauri v2, GPUI, React, and Rust.
 
 ---
 
-## ⚡ Quick Start
+## Quick Start
 
 No install needed. Grab the AppImage built fresh from `main` by CI and run it.
 
@@ -34,7 +22,7 @@ chmod +x win11-clipboard-history_*.AppImage
 ```
 
 No `gh` CLI? Download it from the browser instead:
-**[⬇ Latest AppImage](https://github.com/Aorus22/Win11-Clipboard-Linux/releases/tag/latest)**,
+**[Latest AppImage](https://github.com/Aorus22/Win11-Clipboard-Linux/releases/tag/latest)**,
 then `chmod +x` and run.
 
 > **Paste permission (one-time):** paste simulation needs access to `/dev/uinput`.
@@ -59,18 +47,18 @@ Register `Super+V` to launch it:
 
 ---
 
-## 🌟 Why use this?
+## Why use this?
 
 Most Linux clipboard managers are purely functional but lack visual appeal. This project brings the **modern, fluid design of Windows 11's clipboard history** to the Linux ecosystem, backed by the blazing speed of Rust.
 
-| 😎 | 🔍 |
+| Feature | Description |
 | --- | --- |
-| **🐧 Universal Support** | Works on both **Wayland** & **X11**. The AppImage runs on any distro. |
-| **⚡ Instant Access** | Opens instantly with `Super+V` or `Ctrl+Alt+V`. |
-| **🧠 Smart Positioning** | The window follows your mouse cursor across multiple monitors. |
-| **📌 Pin & Sync** | Pin important snippets to keep them at the top. |
-| **🤩 Emoji Picker** | A built-in, searchable emoji keyboard. |
-| **🛡️ Privacy First** | Your history is stored locally. No data leaves your machine. |
+| **Universal Support** | Works on both **Wayland** and **X11**. The AppImage runs on any distro. |
+| **Instant Access** | Opens instantly with `Super+V` or `Ctrl+Alt+V`. |
+| **Smart Positioning** | The window follows your mouse cursor across multiple monitors. |
+| **Pin and Sync** | Pin important snippets to keep them at the top. |
+| **Emoji Picker** | A built-in, searchable emoji keyboard. |
+| **Privacy First** | Your history is stored locally. No data leaves your machine. |
 
 > **Note on GIFs:** the GIF tab is currently disabled because Google killed the Tenor API
 > ([background](https://arstechnica.com/gadgets/2026/06/google-kills-tenor-gif-api-forcing-changes-at-x-discord-and-more/)).
@@ -78,7 +66,7 @@ Most Linux clipboard managers are purely functional but lack visual appeal. This
 
 ---
 
-## ⌨️ Shortcuts & Usage
+## Shortcuts and Usage
 
 | Key | Action |
 | --- | --- |
@@ -91,7 +79,7 @@ On first run the app shows a Setup Wizard to configure shortcuts and permissions
 
 ---
 
-## 📦 Installation Options
+## Installation Options
 
 <details>
 <summary><b>AppImage — any distro (recommended)</b></summary>
@@ -139,7 +127,7 @@ make gpui-appimage   # -> gpui-app/dist/*.AppImage
 
 ---
 
-## 🔧 Troubleshooting
+## Troubleshooting
 
 <details>
 <summary><b>Shortcut (Super+V) isn't working</b></summary>
@@ -171,15 +159,9 @@ IS_APPIMAGE=1 win11-clipboard-history
 
 ---
 
-## 🛠️ For Developers
+## For Developers
 
 **Tech Stack:** `Rust` + `Tauri v2` + `GPUI` + `React` + `Tailwind CSS` + `Linux`
-
-<div align="center">
-  <a href="https://skillicons.dev">
-    <img src="https://skillicons.dev/icons?i=rust,tauri,react,ts,tailwind,linux" />
-  </a>
-</div>
 
 ```bash
 # 1. Clone
@@ -198,17 +180,10 @@ Useful commands: `make lint`, `make format`, `make test`, `make clean`.
 
 ---
 
-## 🙏 Credits
+## Credits
 
 Forked from [gustavosett/Windows-11-Clipboard-History-For-Linux](https://github.com/gustavosett/Windows-11-Clipboard-History-For-Linux)
 — all credit for the original design and implementation goes upstream.
 This fork focuses on portable AppImage builds straight from CI.
 
-<div align="center">
-<br />
-
-# Like this project?
-
-Give it a ⭐ on [GitHub](https://github.com/Aorus22/Win11-Clipboard-Linux)!
-
-</div>
+Like this project? Give it a star on [GitHub](https://github.com/Aorus22/Win11-Clipboard-Linux).
