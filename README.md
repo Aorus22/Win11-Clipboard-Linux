@@ -111,29 +111,6 @@ sudo setfacl -m u:$USER:rw /dev/uinput  # required for paste simulation
 </details>
 
 <details>
-<summary><b>.deb / .rpm (when published)</b></summary>
-
-Versioned releases may also carry `.deb` (Debian/Ubuntu) and `.rpm` (Fedora/RHEL) packages
-built by the [`release`](https://github.com/Aorus22/Win11-Clipboard-Linux/actions/workflows/release.yml)
-workflow:
-
-```bash
-# Debian / Ubuntu
-sudo apt install ./win11-clipboard-history_*_amd64.deb
-sudo setfacl -m u:$USER:rw /dev/uinput
-
-# Fedora / RHEL
-sudo dnf install ./win11-clipboard-history-*.x86_64.rpm
-sudo setfacl -m u:$USER:rw /dev/uinput
-```
-
-> For APT/DNF repositories with automatic updates and AUR packages, see the
-> [upstream project](https://github.com/gustavosett/Windows-11-Clipboard-History-For-Linux) —
-> those distribution channels are maintained there.
-
-</details>
-
-<details>
 <summary><b>Build from source</b></summary>
 
 ```bash
@@ -218,8 +195,6 @@ make dev
 ```
 
 Useful commands: `make lint`, `make format`, `make test`, `make clean`.
-CI runs lint, build, and security audit on every push
-([`ci`](https://github.com/Aorus22/Win11-Clipboard-Linux/actions/workflows/ci.yml)).
 
 ---
 
