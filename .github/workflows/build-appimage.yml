@@ -1,0 +1,196 @@
+name: Build AppImage
+
+# AppImage builds for Win11-Clipboard-Linux, meniru pola
+# web-term/.github/workflows/build-appimage.yml:
+#
+#   dist/win11-clipboard-history_*_amd64.AppImage         Tauri frontend
+#   dist/win11-clipboard-history-gpui_*_x86_64.AppImage   GPUI frontend
+#   dist/SHA256SUMS.txt
+#
+# What each ref gets:
+#   main   -> Actions artifact + rolling "latest" GitHub Release
+#   v* tag -> versioned GitHub Release (digabung dengan release.yml via --clobber)
+#   PR     -> Actions artifact only (nothing is published)
+#
+# The rolling release keeps a stable download URL:
+#   https://github.com/<owner>/<repo>/releases/download/latest/win11-clipboard-history_<version>_amd64.AppImage
+#
+# Beda dengan web-term: tanpa Docker builder image. Tauri butuh Node +
+# WebKitGTK dev headers, jadi langsung pakai runner ubuntu-22.04 yang glibc-nya
+# (2.35) lebih tua dari desktop target — arah yang aman untuk AppImage portable,
+# sama alasannya dengan Debian bookworm di web-term.
+#
+# No `paths:` filter on purpose: a `v*` tag push must always produce a release.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-appimage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  appimage:
+    name: Linux x86_64 AppImage
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo downloads
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target/
+            gpui-app/target/
+          key: build-appimage-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock', 'gpui-app/Cargo.lock') }}
+          restore-keys: |
+            build-appimage-${{ runner.os }}-
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libssl-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
+            libgtk-3-dev libglib2.0-dev \
+            libfontconfig1-dev libfreetype-dev \
+            libx11-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libvulkan-dev \
+            squashfs-tools
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build Tauri AppImage
+        run: npm run tauri -- build --bundles appimage
+
+      - name: Build GPUI AppImage
+        run: bash scripts/build-gpui-appimage.sh
+
+      - name: Collect artifacts + checksums
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp src-tauri/target/release/bundle/appimage/*.AppImage dist/
+          cp gpui-app/dist/*.AppImage dist/
+          cd dist
+          sha256sum *.AppImage | tee SHA256SUMS.txt
+          echo
+          ls -lh
+
+      # Checks the end-user contract from the artifacts themselves:
+      # every AppImage must extract and run without FUSE.
+      - name: Verify variants
+        run: |
+          set -euo pipefail
+          ls -l dist
+          cat dist/SHA256SUMS.txt
+          ( cd dist && sha256sum -c SHA256SUMS.txt )
+
+          work="$(mktemp -d)"
+          for image in "$PWD"/dist/*.AppImage; do
+            name="$(basename "$image")"
+            rm -rf "${work:?}/squashfs-root"
+            ( cd "$work" && "$image" --appimage-extract >/dev/null )
+            entries="$(find "$work/squashfs-root" -maxdepth 1 | wc -l)"
+            size="$(du -h "$image" | cut -f1)"
+            echo "$name  size=$size  root-entries=$entries  extract=ok"
+          done
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: Win11Clipboard-AppImage-${{ github.sha }}
+          path: |
+            dist/*.AppImage
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      # A main push keeps the rolling `latest` release current, a v* tag
+      # publishes that tag. Same assets either way, so a download URL stays
+      # valid across merges. --clobber makes this coexist with release.yml,
+      # which publishes deb/rpm to the same versioned tag.
+      - name: Publish release
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t APPIMAGES < <(ls dist/*.AppImage)
+          if [[ "${#APPIMAGES[@]}" -lt 1 ]]; then
+            echo "expected at least 1 AppImage, found ${#APPIMAGES[@]}" >&2
+            exit 1
+          fi
+
+          VERSION="$(node -p "require('./package.json').version")"
+
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            TITLE="Win11 Clipboard For Linux ${TAG}"
+            # The tag is what triggered this run, so it already exists.
+            CREATE_ARGS=(--verify-tag)
+          else
+            TAG="latest"
+            TITLE="Win11 Clipboard - latest from main"
+            # Rolling tag: create it on the first main build, then just move
+            # the assets along on later ones.
+            CREATE_ARGS=(--target "${GITHUB_SHA}")
+          fi
+
+          {
+            echo "AppImage v${VERSION} built from \`${GITHUB_SHA:0:7}\` on \`${GITHUB_REF_NAME}\`."
+            echo
+            echo "| asset | frontend | sha256 |"
+            echo "| --- | --- | --- |"
+            for image in "${APPIMAGES[@]}"; do
+              base="$(basename "${image}")"
+              if [[ "${base}" == *gpui* ]]; then
+                frontend="GPUI"
+              else
+                frontend="Tauri"
+              fi
+              echo "| \`${base}\` | ${frontend} | \`$(sha256sum "${image}" | cut -d' ' -f1)\` |"
+            done
+            echo
+            echo "Download:"
+            echo
+            echo '```bash'
+            echo "gh release download ${TAG} --repo ${GITHUB_REPOSITORY} --pattern '*.AppImage'"
+            echo "# or:"
+            echo "# chmod +x win11-clipboard-history_*.AppImage && ./win11-clipboard-history_*.AppImage"
+            echo '```'
+          } > notes.md
+
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" "${APPIMAGES[@]}" dist/SHA256SUMS.txt --repo "${GITHUB_REPOSITORY}" --clobber
+            gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --title "${TITLE}" --notes-file notes.md
+          else
+            gh release create "${TAG}" "${APPIMAGES[@]}" dist/SHA256SUMS.txt \
+              --repo "${GITHUB_REPOSITORY}" --title "${TITLE}" --notes-file notes.md "${CREATE_ARGS[@]}"
+          fi
+
+          gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json url,assets \
+            --jq '.url, (.assets[] | "  " + .name + "  " + (.size | tostring) + " bytes")'
