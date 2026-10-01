@@ -27,7 +27,7 @@ pub fn render_history_item(
 ) -> impl IntoElement {
     let is_dark = state.is_dark;
     let secondary = state.settings.secondary_opacity(is_dark);
-    let compact = state.compact && state.settings.enable_ui_polish;
+    let compact = state.compact;
     let group = format!("card-{}", item.id);
     let item_id = item.id.clone();
     let highlighted = params.focused || item.pinned;

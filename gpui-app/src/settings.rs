@@ -38,8 +38,6 @@ pub struct AppSettings {
     pub enable_dynamic_tray_icon: bool,
     #[serde(default = "default_true")]
     pub enable_smart_actions: bool,
-    #[serde(default = "default_true")]
-    pub enable_ui_polish: bool,
     #[serde(default = "default_max_history")]
     pub max_history_size: usize,
     #[serde(default)]
@@ -90,7 +88,6 @@ impl Default for AppSettings {
             light_background_opacity: default_opacity(),
             enable_dynamic_tray_icon: true,
             enable_smart_actions: true,
-            enable_ui_polish: true,
             max_history_size: default_max_history(),
             auto_delete_interval: 0,
             auto_delete_unit: default_unit(),

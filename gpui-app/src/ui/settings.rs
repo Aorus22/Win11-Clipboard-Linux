@@ -172,7 +172,6 @@ impl SettingsState {
         }
         self.edit(|s| match key {
             "smart" => s.enable_smart_actions = !s.enable_smart_actions,
-            "polish" => s.enable_ui_polish = !s.enable_ui_polish,
             "tray" => s.enable_dynamic_tray_icon = !s.enable_dynamic_tray_icon,
             "focus" => s.close_on_focus_loss = !s.close_on_focus_loss,
             "transparency" => s.allow_transparency = !s.allow_transparency,
@@ -1722,15 +1721,6 @@ impl SettingsState {
                         ))
                         .child(self.toggle_row(
                             ("switch", 2),
-                            "UI Polish",
-                            "Enable animations and compact mode support.",
-                            settings.enable_ui_polish,
-                            "polish",
-                            is_dark,
-                            cx,
-                        ))
-                        .child(self.toggle_row(
-                            ("switch", 3),
                             "Start on Boot (Autostart)",
                             "Launch silently in the background on login.",
                             app_state::autostart_is_enabled(),
