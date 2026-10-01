@@ -1,0 +1,81 @@
+# syntax=docker/dockerfile:1
+
+# Win11 Clipboard — AppImage BUILD environment (Linux x86_64).
+#
+# This image carries the toolchain + system headers ONLY; the source tree is
+# never copied in. Callers mount the repo at /src and run the repo's own build
+# script, so the same image serves CI and a local one-off:
+#
+#   docker build -f docker/Dockerfile.build -t winclip-build .
+#   docker run --rm -v "$PWD:/src" -w /src winclip-build \
+#     bash docker/build-appimage.sh
+#
+# Result: both AppImages in the host tree, plus checksums — see
+# docker/README.md. GitHub Actions does exactly this
+# (.github/workflows/build-appimage.yml).
+#
+# Base is Debian bookworm on purpose: its glibc (2.36) is OLDER than the target
+# desktops' (Fedora/Ubuntu), which is the safe direction for a portable
+# AppImage — the binary only needs symbols that already existed at build time.
+
+FROM rust:1-slim-bookworm AS build
+
+ARG DEBIAN_FRONTEND=noninteractive
+# Bumped here, not in the repo script: the GPUI script honours these two env
+# vars, so pinning the URLs in one place keeps the tool versions reproducible.
+ARG LINUXDEPLOY_URL=https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+ARG APPIMAGETOOL_URL=https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+# Kept in sync with actions/setup-node's "20" in CI history and package.json engines.
+ARG NODE_MAJOR=20
+
+# System build deps, in three groups:
+#   1. toolchain plumbing — pkg-config drives every `-sys` crate; Node builds
+#      the Tauri frontend (vite) via tauri's beforeBuildCommand.
+#   2. Tauri webview stack — WebKitGTK 4.1, ayatana-appindicator (tray),
+#      librsvg, libxdo (paste simulation), OpenSSL.
+#   3. GPUI window/GL/font stack — the GTK3 dev headers (the GPUI client links
+#      the `gtk` crate for the tray backend), fontconfig + freetype for text,
+#      and the X11/Wayland/Vulkan headers gpui links against.
+# `squashfs-tools` is not optional: scripts/build-gpui-appimage.sh pre-flights
+# `mksquashfs` before it does any work.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      build-essential pkg-config ca-certificates curl wget file gnupg \
+      libssl-dev \
+      libwebkit2gtk-4.1-dev \
+      libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
+      libgtk-3-dev libglib2.0-dev \
+      libfontconfig1-dev libfreetype-dev \
+      libx11-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev \
+      libwayland-dev libvulkan-dev \
+      clang libclang-dev \
+      squashfs-tools \
+ && rm -rf /var/lib/apt/lists/*
+
+# Node toolchain — builds the Tauri frontend (`npm run build`) that tauri's
+# beforeBuildCommand invokes. Installed via NodeSource so the major version is
+# pinned in one place (NODE_MAJOR above).
+RUN curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/* \
+ && node --version && npm --version
+
+# Pin the two AppImage helpers into the image instead of letting the build fetch
+# them from GitHub mid-run. The GPUI repo script downloads through
+# LINUXDEPLOY_URL / APPIMAGETOOL_URL and runs each tool with
+# `--appimage-extract-and-run` (no FUSE in containers), so a `file://` URL is
+# all it takes to swap in these copies.
+# The `--version` calls below fail the image build if a tool cannot execute
+# headless, which is where a broken CI run would otherwise show up 20 minutes in.
+RUN curl -fsSL -o /opt/linuxdeploy-x86_64.AppImage "${LINUXDEPLOY_URL}" \
+ && curl -fsSL -o /opt/appimagetool-x86_64.AppImage "${APPIMAGETOOL_URL}" \
+ && chmod +x /opt/linuxdeploy-x86_64.AppImage /opt/appimagetool-x86_64.AppImage \
+ && /opt/linuxdeploy-x86_64.AppImage --appimage-extract-and-run --version \
+ && /opt/appimagetool-x86_64.AppImage --appimage-extract-and-run --version
+
+ENV LINUXDEPLOY_URL=file:///opt/linuxdeploy-x86_64.AppImage \
+    APPIMAGETOOL_URL=file:///opt/appimagetool-x86_64.AppImage
+
+RUN node --version && npm --version && cargo --version
+
+WORKDIR /src

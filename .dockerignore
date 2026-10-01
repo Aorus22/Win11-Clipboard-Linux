@@ -1,0 +1,6 @@
+# The builder image never COPYs the source (the repo is mounted at /src),
+# so keep the build context small: only the docker/ directory matters.
+# (Note: re-including a file whose parent dir is excluded is impossible,
+# so the whole docker/ dir stays in context — it's just text files.)
+*
+!docker/

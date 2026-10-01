@@ -1,24 +1,23 @@
 name: Build AppImage
 
 # AppImage builds for Win11-Clipboard-Linux, meniru pola
-# web-term/.github/workflows/build-appimage.yml:
+# web-term/.github/workflows/build-appimage.yml.
 #
-#   dist/win11-clipboard-history_*_amd64.AppImage         Tauri frontend
-#   dist/win11-clipboard-history-gpui_*_x86_64.AppImage   GPUI frontend
+# The AppImages are produced by docker/Dockerfile.build via
+# docker/build-appimage.sh, so CI and a local run use byte-identical toolchains
+# (see docker/README.md):
+#
+#   dist/win11-clipboard-history_*_amd64.AppImage          Tauri frontend
+#   dist/win11-clipboard-history-gpui_*_x86_64.AppImage    GPUI frontend
 #   dist/SHA256SUMS.txt
 #
 # What each ref gets:
 #   main   -> Actions artifact + rolling "latest" GitHub Release
-#   v* tag -> versioned GitHub Release (digabung dengan release.yml via --clobber)
+#   v* tag -> versioned GitHub Release
 #   PR     -> Actions artifact only (nothing is published)
 #
 # The rolling release keeps a stable download URL:
 #   https://github.com/<owner>/<repo>/releases/download/latest/win11-clipboard-history_<version>_amd64.AppImage
-#
-# Beda dengan web-term: tanpa Docker builder image. Tauri butuh Node +
-# WebKitGTK dev headers, jadi langsung pakai runner ubuntu-22.04 yang glibc-nya
-# (2.35) lebih tua dari desktop target — arah yang aman untuk AppImage portable,
-# sama alasannya dengan Debian bookworm di web-term.
 #
 # No `paths:` filter on purpose: a `v*` tag push must always produce a release.
 
@@ -40,67 +39,39 @@ concurrency:
 jobs:
   appimage:
     name: Linux x86_64 AppImage
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     timeout-minutes: 120
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: "20"
-          cache: "npm"
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo downloads
+      - name: Cache cargo / npm downloads
         uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            src-tauri/target/
-            gpui-app/target/
-          key: build-appimage-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock', 'gpui-app/Cargo.lock') }}
+            ~/.npm
+          key: build-caches-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock', 'gpui-app/Cargo.lock', 'package-lock.json') }}
           restore-keys: |
-            build-appimage-${{ runner.os }}-
+            build-caches-${{ runner.os }}-
 
-      - name: Install system dependencies
+      - name: Build builder image
+        run: docker build -f docker/Dockerfile.build -t winclip-build .
+
+      - name: Build AppImages
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-            libssl-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
-            libgtk-3-dev libglib2.0-dev \
-            libfontconfig1-dev libfreetype-dev \
-            libx11-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libwayland-dev libvulkan-dev \
-            squashfs-tools
-
-      - name: Install npm dependencies
-        run: npm ci
-
-      - name: Build Tauri AppImage
-        run: npm run tauri -- build --bundles appimage
-
-      - name: Build GPUI AppImage
-        run: bash scripts/build-gpui-appimage.sh
-
-      - name: Collect artifacts + checksums
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          cp src-tauri/target/release/bundle/appimage/*.AppImage dist/
-          cp gpui-app/dist/*.AppImage dist/
-          cd dist
-          sha256sum *.AppImage | tee SHA256SUMS.txt
-          echo
-          ls -lh
+          docker run --rm \
+            -v "$PWD:/src" \
+            -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
+            -v "$HOME/.cargo/git:/usr/local/cargo/git" \
+            -v "$HOME/.npm:/root/.npm" \
+            -w /src \
+            winclip-build bash docker/build-appimage.sh
 
       # Checks the end-user contract from the artifacts themselves:
-      # every AppImage must extract and run without FUSE.
+      # every AppImage must verify against SHA256SUMS and extract without FUSE.
       - name: Verify variants
         run: |
           set -euo pipefail
@@ -118,6 +89,13 @@ jobs:
             echo "$name  size=$size  root-entries=$entries  extract=ok"
           done
 
+      # The build container runs as root, so the mount-backed caches come back
+      # root-owned (cargo also unpacks registry sources read-only) and the
+      # actions/cache post step would then fail to tar them. Hand them back.
+      - name: Fix cache ownership
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" "$HOME/.cargo" "$HOME/.npm" || true
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
@@ -130,8 +108,7 @@ jobs:
 
       # A main push keeps the rolling `latest` release current, a v* tag
       # publishes that tag. Same assets either way, so a download URL stays
-      # valid across merges. --clobber makes this coexist with release.yml,
-      # which publishes deb/rpm to the same versioned tag.
+      # valid across merges.
       - name: Publish release
         if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         env:
@@ -140,8 +117,21 @@ jobs:
           set -euo pipefail
 
           mapfile -t APPIMAGES < <(ls dist/*.AppImage)
-          if [[ "${#APPIMAGES[@]}" -lt 1 ]]; then
-            echo "expected at least 1 AppImage, found ${#APPIMAGES[@]}" >&2
+          if [[ "${#APPIMAGES[@]}" -ne 2 ]]; then
+            echo "expected 2 AppImages (Tauri + GPUI), found ${#APPIMAGES[@]}" >&2
+            exit 1
+          fi
+
+          TAURI=""
+          GPUI=""
+          for image in "${APPIMAGES[@]}"; do
+            case "$(basename "$image")" in
+              *gpui*) GPUI="$image" ;;
+              *) TAURI="$image" ;;
+            esac
+          done
+          if [[ -z "$TAURI" || -z "$GPUI" ]]; then
+            echo "expected one Tauri and one GPUI AppImage, got: ${APPIMAGES[*]}" >&2
             exit 1
           fi
 
@@ -165,15 +155,8 @@ jobs:
             echo
             echo "| asset | frontend | sha256 |"
             echo "| --- | --- | --- |"
-            for image in "${APPIMAGES[@]}"; do
-              base="$(basename "${image}")"
-              if [[ "${base}" == *gpui* ]]; then
-                frontend="GPUI"
-              else
-                frontend="Tauri"
-              fi
-              echo "| \`${base}\` | ${frontend} | \`$(sha256sum "${image}" | cut -d' ' -f1)\` |"
-            done
+            echo "| \`$(basename "${TAURI}")\` | Tauri | \`$(sha256sum "${TAURI}" | cut -d' ' -f1)\` |"
+            echo "| \`$(basename "${GPUI}")\` | GPUI | \`$(sha256sum "${GPUI}" | cut -d' ' -f1)\` |"
             echo
             echo "Download:"
             echo
