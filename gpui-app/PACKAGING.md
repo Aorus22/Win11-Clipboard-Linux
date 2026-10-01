@@ -73,7 +73,7 @@ still detects DE-level collisions.
 A portable single-file bundle, built without sudo:
 
 ```bash
-make gpui-appimage                 # → gpui-app/dist/win11-clipboard-history-gpui_<ver>_x86_64.AppImage
+make gpui-appimage                 # → gpui-app/dist/win11-clipboard-history_<ver>_x86_64.AppImage
 make gpui-appimage-install         # build, then register it for the current user
 ```
 

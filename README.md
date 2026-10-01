@@ -1,10 +1,13 @@
 # Win11 Clipboard for Linux
 
+A GPUI-focused fork of
+[gustavosett/Windows-11-Clipboard-History-For-Linux](https://github.com/gustavosett/Windows-11-Clipboard-History-For-Linux).
+
 [Releases](https://github.com/Aorus22/Win11-Clipboard-Linux/releases) • [Report Bug](https://github.com/Aorus22/Win11-Clipboard-Linux/issues) • [Actions](https://github.com/Aorus22/Win11-Clipboard-Linux/actions)
 
-**The aesthetic, feature-rich clipboard manager your Linux desktop deserves.**
+**The aesthetic, feature-rich clipboard manager your Linux desktop deserves — now with a lightweight native GPUI frontend.**
 
-MIT licensed. Built with Tauri v2, GPUI, React, and Rust.
+MIT licensed. Built with Rust, GPUI, and Tauri v2.
 
 ---
 
@@ -13,8 +16,8 @@ MIT licensed. Built with Tauri v2, GPUI, React, and Rust.
 No install needed. Grab the AppImage built fresh from `main` by CI and run it.
 
 ```bash
-# 1. Download the latest AppImage (Tauri frontend)
-gh release download latest --repo Aorus22/Win11-Clipboard-Linux --pattern '*.AppImage'
+# 1. Download the latest AppImage (GPUI frontend)
+gh release download latest --repo Aorus22/Win11-Clipboard-Linux --pattern '*_x86_64.AppImage'
 
 # 2. Make it executable and run it
 chmod +x win11-clipboard-history_*.AppImage
@@ -33,8 +36,8 @@ Two frontends ship side by side — pick one:
 
 | File | Frontend | Notes |
 | --- | --- | --- |
-| `win11-clipboard-history_*_amd64.AppImage` | **Tauri** (React) | Full-featured UI, recommended for most users |
-| `win11-clipboard-history-gpui_*_x86_64.AppImage` | **GPUI** (native Rust) | Lightweight native client |
+| `win11-clipboard-history_*_x86_64.AppImage` | **GPUI** (native Rust) | Lightweight native client, the focus of this fork |
+| `win11-clipboard-history_*_amd64.AppImage` | **Tauri** (React) | Full-featured UI inherited from upstream |
 
 Verify your download with the checksums published next to every release:
 
@@ -44,6 +47,23 @@ sha256sum -c SHA256SUMS.txt
 
 Register `Super+V` to launch it:
 `KEYBOARD SETTINGS -> SHORTCUTS -> NEW SHORTCUT -> Super+V -> /path/to/win11-clipboard-history_*.AppImage`
+
+---
+
+## About this fork
+
+This is a fork of
+[gustavosett/Windows-11-Clipboard-History-For-Linux](https://github.com/gustavosett/Windows-11-Clipboard-History-For-Linux)
+with development focus shifted to the **GPUI frontend**: a native Rust client
+with no webview, smaller footprint, and faster startup. The original Tauri
+frontend is kept as-is for users who prefer it.
+
+What this fork adds on top of upstream:
+
+- Portable **AppImages** for both frontends, rebuilt by CI on every push to
+  `main` and published to a rolling `latest` release.
+- A reproducible **Docker builder image** so local builds use the exact same
+  toolchain as CI.
 
 ---
 

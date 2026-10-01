@@ -11,8 +11,8 @@
 #   docker run --rm -v "$PWD:/src" -w /src winclip-build bash docker/build-appimage.sh
 #
 # Output (one file per frontend, plus checksums):
-#   dist/win11-clipboard-history_*_amd64.AppImage          Tauri frontend
-#   dist/win11-clipboard-history-gpui_*_x86_64.AppImage    GPUI frontend
+#   dist/win11-clipboard-history_*_amd64.AppImage              Tauri frontend
+#   dist/win11-clipboard-history_*_x86_64.AppImage             GPUI frontend
 #   dist/SHA256SUMS.txt
 set -euo pipefail
 

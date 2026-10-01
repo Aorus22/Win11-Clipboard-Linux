@@ -7,8 +7,8 @@ name: Build AppImage
 # docker/build-appimage.sh, so CI and a local run use byte-identical toolchains
 # (see docker/README.md):
 #
-#   dist/win11-clipboard-history_*_amd64.AppImage          Tauri frontend
-#   dist/win11-clipboard-history-gpui_*_x86_64.AppImage    GPUI frontend
+#   dist/win11-clipboard-history_*_amd64.AppImage              Tauri frontend
+#   dist/win11-clipboard-history_*_x86_64.AppImage             GPUI frontend
 #   dist/SHA256SUMS.txt
 #
 # What each ref gets:
@@ -126,8 +126,8 @@ jobs:
           GPUI=""
           for image in "${APPIMAGES[@]}"; do
             case "$(basename "$image")" in
-              *gpui*) GPUI="$image" ;;
-              *) TAURI="$image" ;;
+              *_amd64.AppImage) TAURI="$image" ;;
+              *_x86_64.AppImage) GPUI="$image" ;;
             esac
           done
           if [[ -z "$TAURI" || -z "$GPUI" ]]; then

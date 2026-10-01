@@ -18,8 +18,8 @@ repo's own `scripts/build-gpui-appimage.sh` and `tauri build`).
 ```bash
 docker build -f docker/Dockerfile.build -t winclip-build .
 docker run --rm -v "$PWD:/src" -w /src winclip-build bash docker/build-appimage.sh
-# -> dist/win11-clipboard-history_*_amd64.AppImage          Tauri frontend
-#    dist/win11-clipboard-history-gpui_*_x86_64.AppImage    GPUI frontend
+# -> dist/win11-clipboard-history_*_amd64.AppImage              Tauri frontend
+#    dist/win11-clipboard-history_*_x86_64.AppImage             GPUI frontend
 #    dist/SHA256SUMS.txt
 ```
 
@@ -28,7 +28,7 @@ Two AppImages exist because the repo ships two frontends:
 | File | Frontend | Stack |
 | --- | --- | --- |
 | `win11-clipboard-history_*_amd64.AppImage` | Tauri (React) | WebKitGTK system webview |
-| `win11-clipboard-history-gpui_*_x86_64.AppImage` | GPUI (native Rust) | linuxdeploy-bundled libs, GTK3 stays on the host |
+| `win11-clipboard-history_*_x86_64.AppImage` | GPUI (native Rust) | linuxdeploy-bundled libs, GTK3 stays on the host |
 
 Useful mounts to keep caches warm between runs (all optional):
 

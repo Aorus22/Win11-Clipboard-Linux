@@ -61,7 +61,10 @@ VERSION="$(grep -m1 '^version' "$GPUI_DIR/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/'
 ARCH="$(uname -m)"
 [[ "$ARCH" == "x86_64" ]] || fail "only x86_64 is supported by the bundled tools (got $ARCH)"
 
-OUT_NAME="${BIN_NAME}_${VERSION}_${ARCH}.AppImage"
+# Public artifact name drops the `-gpui` suffix: this is the main AppImage
+# of the fork, so it ships as plain `win11-clipboard-history`. (BIN_NAME above
+# stays `-gpui`-suffixed for the internal AppDir/desktop/icon/autostart IDs.)
+OUT_NAME="win11-clipboard-history_${VERSION}_${ARCH}.AppImage"
 
 # --- Helper tools -----------------------------------------------------------
 

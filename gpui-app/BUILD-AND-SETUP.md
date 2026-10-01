@@ -85,7 +85,7 @@ names, ids, config dirs and sockets are all distinct.
 ### Option A — AppImage (recommended, no sudo)
 
 ```bash
-make gpui-appimage            # → gpui-app/dist/win11-clipboard-history-gpui_<ver>_x86_64.AppImage
+make gpui-appimage            # → gpui-app/dist/win11-clipboard-history_<ver>_x86_64.AppImage
 make gpui-appimage-install    # build + register for the current user
 ```
 
@@ -99,7 +99,7 @@ What `--install` does:
 
 | Item | Location |
 |---|---|
-| AppImage | `~/Applications/win11-clipboard-history-gpui_<ver>_x86_64.AppImage` |
+| AppImage | `~/Applications/win11-clipboard-history_<ver>_x86_64.AppImage` |
 | Desktop entry | `~/.local/share/applications/win11-clipboard-history-gpui.desktop` (absolute `Exec`, so the Settings action works) |
 | Icons | `~/.local/share/icons/hicolor/...` |
 
@@ -126,7 +126,7 @@ the Tauri build). Uninstall with `sudo make gpui-uninstall` (keeps user data).
 Launch the app:
 
 ```bash
-~/Applications/win11-clipboard-history-gpui_*_x86_64.AppImage
+~/Applications/win11-clipboard-history_*_x86_64.AppImage
 ```
 
 The 5-step setup wizard opens automatically:
@@ -186,7 +186,7 @@ Super+V again (or click elsewhere) hides it.
 | Popup won't close on outside click / drag misbehaves | inspect `~/.config/win11-clipboard-history-gpui/drag-debug.log` (disable with `WIN11_CLIPBOARD_DRAG_LOG=0`) |
 | Settings window: transparency disabled | expected on NVIDIA + AppImage (WebKit DMABUF workaround); the Settings window says so |
 | Reset everything (fresh wizard) | `rm -rf ~/.config/win11-clipboard-history-gpui/` |
-| Uninstall (AppImage) | remove `~/Applications/win11-clipboard-history-gpui_*.AppImage`, `~/.local/share/applications/win11-clipboard-history-gpui.desktop`, hicolor icons; unbind Super+V via Settings → keyboard |
+| Uninstall (AppImage) | remove `~/Applications/win11-clipboard-history_*.AppImage`, `~/.local/share/applications/win11-clipboard-history-gpui.desktop`, hicolor icons; unbind Super+V via Settings → keyboard |
 
 ### Themes (System / Light / Dark / Desktop-GTK)
 
