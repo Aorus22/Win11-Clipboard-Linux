@@ -94,51 +94,73 @@ On first run the app shows a Setup Wizard to configure shortcuts and permissions
 
 ---
 
-## Installation Options
+## Build
 
-<details>
-<summary><b>AppImage — any distro (recommended)</b></summary>
+Three ways to get a binary: build locally, trigger CI, or run from source in dev mode.
 
-The AppImage is built by the
-[`build-appimage`](https://github.com/Aorus22/Win11-Clipboard-Linux/actions/workflows/build-appimage.yml)
-workflow, which only runs manually: open it from the Actions tab with a tag
-(`latest` for the rolling release, `vX.Y.Z` for a versioned one) and tick
-publish. Versioned tags (e.g. `v0.9.0`) get their own release page with the same assets.
+### 1. Local build
 
-```bash
-chmod +x win11-clipboard-history_*.AppImage
-sudo setfacl -m u:$USER:rw /dev/uinput  # required for paste simulation
-./win11-clipboard-history_*.AppImage
-```
-
-</details>
-
-<details>
-<summary><b>Build from source</b></summary>
+Prerequisites: Rust plus the system headers (`make deps` installs them, distro auto-detected).
 
 ```bash
 # 1. Clone
 git clone https://github.com/Aorus22/Win11-Clipboard-Linux.git
 cd Win11-Clipboard-Linux
 
-# 2. Install dependencies
-make deps && make rust && make node
+# 2. System deps + Rust
+make deps && make rust
 source ~/.cargo/env
 
-# 3. Run in dev mode (hot reload)
-make dev
+# 3a. Release binary         -> gpui-app/target/release/win11-clipboard-history-gpui
+make gpui-build
 
-# 4. Or build a production release
-make build
+# 3b. Portable AppImage      -> gpui-app/dist/win11-clipboard-history_*_x86_64.AppImage
+make gpui-appimage
+
+# 3c. Install to this system (needs sudo)
+sudo make gpui-install
 ```
 
-GPUI frontend only:
+Prefer the exact CI toolchain instead? Build inside the Docker builder image —
+byte-identical to what CI produces, no host deps needed except Docker:
 
 ```bash
-make gpui-appimage   # -> gpui-app/dist/*.AppImage
+docker build -f docker/Dockerfile.build -t winclip-build .
+docker run --rm -v "$PWD:/src" -w /src winclip-build bash docker/build-appimage.sh
+# -> dist/win11-clipboard-history_*_x86_64.AppImage
+#    dist/SHA256SUMS.txt
 ```
 
-</details>
+### 2. CI build
+
+The [`build-appimage`](https://github.com/Aorus22/Win11-Clipboard-Linux/actions/workflows/build-appimage.yml)
+workflow never runs on its own — trigger it explicitly. From the Actions tab
+open "Build AppImage", click "Run workflow", set the tag (`latest` for the
+rolling release, `vX.Y.Z` for a versioned one) and tick `publish` to land the
+result in Releases. Or from the terminal:
+
+```bash
+# Build + publish v0.9.0 to Releases
+gh workflow run build-appimage.yml --repo Aorus22/Win11-Clipboard-Linux --ref main -f tag=v0.9.0
+
+# Build only (artifact, no release): untick publish in the Actions tab
+```
+
+Every run uploads the AppImage + `SHA256SUMS.txt` as an Actions artifact
+(kept 14 days), so even a build-only run stays downloadable.
+
+### 3. Dev run
+
+```bash
+# System deps + Rust (once)
+make deps && make rust
+source ~/.cargo/env
+
+# Run the GPUI client from source (debug build, logging on)
+cargo run --manifest-path gpui-app/Cargo.toml
+```
+
+Useful commands: `make lint`, `make format`, `make clean`.
 
 ---
 
@@ -171,27 +193,6 @@ IS_APPIMAGE=1 win11-clipboard-history
 ```
 
 </details>
-
----
-
-## For Developers
-
-**Tech Stack:** `Rust` + `GPUI` + `Linux`
-
-```bash
-# 1. Clone
-git clone https://github.com/Aorus22/Win11-Clipboard-Linux.git
-cd Win11-Clipboard-Linux
-
-# 2. Install Deps
-make deps && make rust && make node
-source ~/.cargo/env
-
-# 3. Run Dev Mode
-make dev
-```
-
-Useful commands: `make lint`, `make format`, `make test`, `make clean`.
 
 ---
 
