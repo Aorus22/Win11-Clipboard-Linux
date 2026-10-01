@@ -73,11 +73,12 @@ One workflow owns packaging end to end:
 
 | workflow | responsibility | triggers |
 | --- | --- | --- |
-| `build-appimage.yml` | builder image + both AppImages + rolling `latest` / versioned releases | every push to `main`, `v*` tags, PRs |
+| `build-appimage.yml` | builder image + both AppImages | every push to `main`, `v*` tags, PRs (artifact only) |
 
-Both AppImages are uploaded as one Actions artifact and published to the same
-GitHub Release — a rolling **`latest`** on `main` pushes, a versioned release
-for `v*` tags — which keeps permanent download URLs that survive merges:
+Nothing is published automatically: invoke the workflow manually from the
+Actions tab ("Run workflow") with a tag — `latest` for the rolling release, or
+`vX.Y.Z` for a versioned one — and the built AppImages land in that GitHub
+Release, keeping permanent download URLs that survive merges:
 
 ```bash
 gh release download latest --repo Aorus22/Win11-Clipboard-Linux --pattern '*.AppImage'

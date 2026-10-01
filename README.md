@@ -99,11 +99,11 @@ On first run the app shows a Setup Wizard to configure shortcuts and permissions
 <details>
 <summary><b>AppImage — any distro (recommended)</b></summary>
 
-Every push to `main` rebuilds the AppImage via the
+CI rebuilds the AppImage on every push to `main` via the
 [`build-appimage`](https://github.com/Aorus22/Win11-Clipboard-Linux/actions/workflows/build-appimage.yml)
-workflow and publishes them to the rolling
-[`latest`](https://github.com/Aorus22/Win11-Clipboard-Linux/releases/tag/latest)
-release. Versioned tags (e.g. `v0.7.1`) get their own release page with the same assets.
+workflow. Publishing to Releases is manual: run the workflow from the Actions
+tab with a tag (`latest` for the rolling release, `vX.Y.Z` for a versioned
+one). Versioned tags (e.g. `v0.7.1`) get their own release page with the same assets.
 
 ```bash
 chmod +x win11-clipboard-history_*.AppImage

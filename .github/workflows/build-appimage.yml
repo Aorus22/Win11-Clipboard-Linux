@@ -11,10 +11,13 @@ name: Build AppImage
 #   dist/win11-clipboard-history_*_x86_64.AppImage             GPUI frontend
 #   dist/SHA256SUMS.txt
 #
-# What each ref gets:
-#   main   -> Actions artifact + rolling "latest" GitHub Release
-#   v* tag -> versioned GitHub Release
-#   PR     -> Actions artifact only (nothing is published)
+# What each run gets:
+#   push main / v* tag / PR -> build only, Actions artifact (nothing is published)
+#   manual dispatch          -> build + publish to the given tag in Releases
+#
+# Invoke explicitly from the Actions tab ("Run workflow") with a tag:
+#   latest         -> rolling release, stable download URL
+#   vX.Y.Z         -> versioned release (tag is created if missing)
 #
 # The rolling release keeps a stable download URL:
 #   https://github.com/<owner>/<repo>/releases/download/latest/win11-clipboard-history_<version>_amd64.AppImage
@@ -28,6 +31,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish to (latest = rolling, vX.Y.Z = versioned)'
+        required: true
+        default: 'latest'
 
 permissions:
   contents: write
@@ -106,13 +114,14 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # A main push keeps the rolling `latest` release current, a v* tag
-      # publishes that tag. Same assets either way, so a download URL stays
-      # valid across merges.
+      # Published ONLY on explicit manual dispatch — never automatically.
+      # Pick the tag in the Actions tab ("Run workflow"): `latest` for the
+      # rolling release, `vX.Y.Z` for a versioned one (created if missing).
       - name: Publish release
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
 
@@ -137,17 +146,22 @@ jobs:
 
           VERSION="$(node -p "require('./package.json').version")"
 
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-            TITLE="Win11 Clipboard For Linux ${TAG}"
-            # The tag is what triggered this run, so it already exists.
-            CREATE_ARGS=(--verify-tag)
-          else
-            TAG="latest"
+          TAG="${RELEASE_TAG}"
+
+          if [[ "${TAG}" == "latest" ]]; then
             TITLE="Win11 Clipboard - latest from main"
-            # Rolling tag: create it on the first main build, then just move
-            # the assets along on later ones.
+            # Rolling tag: create it on the first manual publish, then just
+            # move the assets along on later ones.
             CREATE_ARGS=(--target "${GITHUB_SHA}")
+          else
+            TITLE="Win11 Clipboard For Linux ${TAG}"
+            if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+              # The tag already exists, publish onto it.
+              CREATE_ARGS=(--verify-tag)
+            else
+              # Fresh versioned tag, created at this commit.
+              CREATE_ARGS=(--target "${GITHUB_SHA}")
+            fi
           fi
 
           {
