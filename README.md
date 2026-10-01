@@ -7,7 +7,7 @@ A GPUI-focused fork of
 
 **The aesthetic, feature-rich clipboard manager your Linux desktop deserves — now with a lightweight native GPUI frontend.**
 
-MIT licensed. Built with Rust, GPUI, and Tauri v2.
+MIT licensed. Built with Rust and GPUI.
 
 ---
 
@@ -32,12 +32,8 @@ then `chmod +x` and run.
 > `sudo setfacl -m u:$USER:rw /dev/uinput` grants it immediately (resets on reboot —
 > for a permanent rule see the upstream install script or your distro's udev docs).
 
-Two frontends ship side by side — pick one:
-
-| File | Frontend | Notes |
-| --- | --- | --- |
-| `win11-clipboard-history_*_x86_64.AppImage` | **GPUI** (native Rust) | Lightweight native client, the focus of this fork |
-| `win11-clipboard-history_*_amd64.AppImage` | **Tauri** (React) | Full-featured UI inherited from upstream |
+The AppImage is the native GPUI client (`win11-clipboard-history_*_x86_64.AppImage`):
+no webview, no install needed.
 
 Verify your download with the checksums published next to every release:
 
@@ -54,13 +50,12 @@ Register `Super+V` to launch it:
 
 This is a fork of
 [gustavosett/Windows-11-Clipboard-History-For-Linux](https://github.com/gustavosett/Windows-11-Clipboard-History-For-Linux)
-with development focus shifted to the **GPUI frontend**: a native Rust client
-with no webview, smaller footprint, and faster startup. The original Tauri
-frontend is kept as-is for users who prefer it.
+focused on the **GPUI frontend**: a native Rust client with no webview,
+smaller footprint, and faster startup.
 
 What this fork adds on top of upstream:
 
-- Portable **AppImages** for both frontends, rebuilt by CI on every push to
+- A portable **AppImage** of the GPUI client, rebuilt by CI on every push to
   `main` and published to a rolling `latest` release.
 - A reproducible **Docker builder image** so local builds use the exact same
   toolchain as CI.
@@ -104,7 +99,7 @@ On first run the app shows a Setup Wizard to configure shortcuts and permissions
 <details>
 <summary><b>AppImage — any distro (recommended)</b></summary>
 
-Every push to `main` rebuilds both AppImages via the
+Every push to `main` rebuilds the AppImage via the
 [`build-appimage`](https://github.com/Aorus22/Win11-Clipboard-Linux/actions/workflows/build-appimage.yml)
 workflow and publishes them to the rolling
 [`latest`](https://github.com/Aorus22/Win11-Clipboard-Linux/releases/tag/latest)
@@ -181,7 +176,7 @@ IS_APPIMAGE=1 win11-clipboard-history
 
 ## For Developers
 
-**Tech Stack:** `Rust` + `Tauri v2` + `GPUI` + `React` + `Tailwind CSS` + `Linux`
+**Tech Stack:** `Rust` + `GPUI` + `Linux`
 
 ```bash
 # 1. Clone
@@ -204,6 +199,6 @@ Useful commands: `make lint`, `make format`, `make test`, `make clean`.
 
 Forked from [gustavosett/Windows-11-Clipboard-History-For-Linux](https://github.com/gustavosett/Windows-11-Clipboard-History-For-Linux)
 — all credit for the original design and implementation goes upstream.
-This fork focuses on portable AppImage builds straight from CI.
+This fork focuses on GPUI development.
 
 Like this project? Give it a star on [GitHub](https://github.com/Aorus22/Win11-Clipboard-Linux).
