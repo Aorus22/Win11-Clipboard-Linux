@@ -3,12 +3,11 @@ name: Build AppImage
 # AppImage builds for Win11-Clipboard-Linux, meniru pola
 # web-term/.github/workflows/build-appimage.yml.
 #
-# The AppImages are produced by docker/Dockerfile.build via
+# The AppImage is produced by docker/Dockerfile.build via
 # docker/build-appimage.sh, so CI and a local run use byte-identical toolchains
-# (see docker/README.md):
+# (see docker/README.md). GPUI only — the Tauri frontend is not built here.
 #
-#   dist/win11-clipboard-history_*_amd64.AppImage              Tauri frontend
-#   dist/win11-clipboard-history_*_x86_64.AppImage             GPUI frontend
+#   dist/win11-clipboard-history_*_x86_64.AppImage
 #   dist/SHA256SUMS.txt
 #
 # What each run gets:
@@ -55,27 +54,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Cache cargo / npm downloads
+      - name: Cache cargo downloads
         uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            ~/.npm
-          key: build-caches-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock', 'gpui-app/Cargo.lock', 'package-lock.json') }}
+          key: build-caches-${{ runner.os }}-${{ hashFiles('gpui-app/Cargo.lock', 'core/Cargo.toml') }}
           restore-keys: |
             build-caches-${{ runner.os }}-
 
       - name: Build builder image
         run: docker build -f docker/Dockerfile.build -t winclip-build .
 
-      - name: Build AppImages
+      - name: Build AppImage
         run: |
           docker run --rm \
             -v "$PWD:/src" \
             -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
             -v "$HOME/.cargo/git:/usr/local/cargo/git" \
-            -v "$HOME/.npm:/root/.npm" \
             -w /src \
             winclip-build bash docker/build-appimage.sh
 
@@ -103,7 +100,7 @@ jobs:
       # actions/cache post step would then fail to tar them. Hand them back.
       - name: Fix cache ownership
         if: always()
-        run: sudo chown -R "$(id -u):$(id -g)" "$HOME/.cargo" "$HOME/.npm" || true
+        run: sudo chown -R "$(id -u):$(id -g)" "$HOME/.cargo" || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -128,25 +125,14 @@ jobs:
           set -euo pipefail
 
           mapfile -t APPIMAGES < <(ls dist/*.AppImage)
-          if [[ "${#APPIMAGES[@]}" -ne 2 ]]; then
-            echo "expected 2 AppImages (Tauri + GPUI), found ${#APPIMAGES[@]}" >&2
+          if [[ "${#APPIMAGES[@]}" -ne 1 ]]; then
+            echo "expected 1 GPUI AppImage, found ${#APPIMAGES[@]}" >&2
             exit 1
           fi
 
-          TAURI=""
-          GPUI=""
-          for image in "${APPIMAGES[@]}"; do
-            case "$(basename "$image")" in
-              *_amd64.AppImage) TAURI="$image" ;;
-              *_x86_64.AppImage) GPUI="$image" ;;
-            esac
-          done
-          if [[ -z "$TAURI" || -z "$GPUI" ]]; then
-            echo "expected one Tauri and one GPUI AppImage, got: ${APPIMAGES[*]}" >&2
-            exit 1
-          fi
+          APPIMAGE="${APPIMAGES[0]}"
 
-          VERSION="$(node -p "require('./package.json').version")"
+          VERSION="$(grep -m1 '^version' gpui-app/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
 
           TAG="${RELEASE_TAG}"
 
@@ -167,12 +153,9 @@ jobs:
           fi
 
           {
-            echo "AppImage v${VERSION} built from \`${GITHUB_SHA:0:7}\` on \`${GITHUB_REF_NAME}\`."
+            echo "GPUI AppImage v${VERSION} built from \`${GITHUB_SHA:0:7}\`."
             echo
-            echo "| asset | frontend | sha256 |"
-            echo "| --- | --- | --- |"
-            echo "| \`$(basename "${TAURI}")\` | Tauri | \`$(sha256sum "${TAURI}" | cut -d' ' -f1)\` |"
-            echo "| \`$(basename "${GPUI}")\` | GPUI | \`$(sha256sum "${GPUI}" | cut -d' ' -f1)\` |"
+            echo "sha256: \`$(sha256sum "${APPIMAGE}" | cut -d' ' -f1)\`"
             echo
             echo "Download:"
             echo
@@ -184,10 +167,10 @@ jobs:
           } > notes.md
 
           if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release upload "${TAG}" "${APPIMAGES[@]}" dist/SHA256SUMS.txt --repo "${GITHUB_REPOSITORY}" --clobber
+            gh release upload "${TAG}" "${APPIMAGE}" dist/SHA256SUMS.txt --repo "${GITHUB_REPOSITORY}" --clobber
             gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --title "${TITLE}" --notes-file notes.md
           else
-            gh release create "${TAG}" "${APPIMAGES[@]}" dist/SHA256SUMS.txt \
+            gh release create "${TAG}" "${APPIMAGE}" dist/SHA256SUMS.txt \
               --repo "${GITHUB_REPOSITORY}" --title "${TITLE}" --notes-file notes.md "${CREATE_ARGS[@]}"
           fi
 
