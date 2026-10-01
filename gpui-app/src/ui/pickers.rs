@@ -811,6 +811,11 @@ fn render_kaomoji_grid_virtual(
 ) -> gpui::AnyElement {
     let cols = kaomoji_columns(window).max(1);
     let row_count = items.len().div_ceil(cols);
+    // Same shrink-wrap as the emoji/symbol grids: pin list and rows to the
+    // real content width so the flex_1 cells split it into equal columns
+    // (Tauri `grid-cols-N` parity). Without this the rows size to their text
+    // and every cell hugs its own label.
+    let content_w = (win_w(window) - 24.0).max(40.0);
     let focused = state.kaomoji.focused_main;
     let is_dark = state.is_dark;
     let text_color = if is_dark {
@@ -899,12 +904,19 @@ fn render_kaomoji_grid_virtual(
                                 .child(label),
                         );
                     }
+                    // Pad partial rows with spacers so every cell keeps a
+                    // single width, same as the emoji/symbol grids.
+                    for k in cells.len()..cols {
+                        cells.push(div().id(("v-kaomoji-pad", row * cols.max(1) + k)).flex_1());
+                    }
+                    // Definite row width (see content_w above).
                     rows.push(
                         div()
                             .flex()
                             .flex_row()
                             .h(px(48.))
                             .gap(px(8.))
+                            .w(px(content_w))
                             .children(cells),
                     );
                 }
@@ -912,6 +924,8 @@ fn render_kaomoji_grid_virtual(
             })
             .flex_1()
             .min_h(px(0.))
+            // Definite list width (see content_w above).
+            .w(px(content_w))
             .track_scroll(scroll),
             repaint,
         ))
