@@ -66,7 +66,7 @@ jobs:
             build-caches-${{ runner.os }}-
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build builder image
         uses: docker/build-push-action@v6
