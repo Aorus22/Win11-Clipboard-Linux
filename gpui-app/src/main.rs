@@ -21,6 +21,7 @@ use gpui::{
 mod app_state;
 mod backend;
 mod click_watch;
+mod cosmic_shortcut;
 mod drag_log;
 mod geometry;
 mod gnome_shortcut;
@@ -589,7 +590,12 @@ fn main() {
     }
     // Headless setup helpers (also used by packaging scripts).
     if has_arg(&args, "--register-shortcuts") {
-        match gnome_shortcut::register() {
+        let registered = if cosmic_shortcut::is_cosmic() {
+            cosmic_shortcut::register()
+        } else {
+            gnome_shortcut::register()
+        };
+        match registered {
             Ok(msg) => {
                 println!("{msg}");
                 std::process::exit(0);
@@ -601,7 +607,12 @@ fn main() {
         }
     }
     if has_arg(&args, "--unregister-shortcuts") {
-        match gnome_shortcut::unregister() {
+        let unregistered = if cosmic_shortcut::is_cosmic() {
+            cosmic_shortcut::unregister()
+        } else {
+            gnome_shortcut::unregister()
+        };
+        match unregistered {
             Ok(msg) => {
                 println!("{msg}");
                 std::process::exit(0);
@@ -683,6 +694,19 @@ fn main() {
             load_bundled_emoji_font(cx);
             // Resident holder first: the app must survive with zero visible windows.
             open_holder_window(cx);
+            // COSMIC lists the holder as a running app; retry until gpui has
+            // created its X window.
+            std::thread::spawn(|| {
+                let mut last = String::new();
+                for _ in 0..60 {
+                    match window_drag::unmanage_holder(APP_ID) {
+                        Ok(()) => return,
+                        Err(e) => last = e,
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                eprintln!("[gpui-app] holder window not unmanaged: {last}");
+            });
             // Persistent popup: created lazily on first toggle (or immediately
             // below when starting visible) and never destroyed afterwards —
             // show/hide only parks the X window offscreen.
@@ -855,6 +879,14 @@ fn main() {
                                                 display_scale,
                                             )
                                         });
+                                        // Reset content and restart the appear
+                                        // animation BEFORE the window is mapped:
+                                        // mapping first flashes the previous
+                                        // session's last frame (fully opaque)
+                                        // until the first fresh frame lands.
+                                        let _ = h.update(cx, |popup, _window, cx| {
+                                            popup.prepare_for_show(show_tab, cx);
+                                        });
                                         match origin {
                                             Ok((x, y)) => {
                                                 // Move first (invisible), then
@@ -879,7 +911,6 @@ fn main() {
                                             ),
                                         }
                                         let _ = h.update(cx, |popup, window, cx| {
-                                            popup.prepare_for_show(show_tab, cx);
                                             window.activate_window();
                                             popup.focus.focus(window);
                                             cx.notify();

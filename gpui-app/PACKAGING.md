@@ -139,5 +139,5 @@ the dock — only the clipboard popup is hidden.
 ## Not in this milestone
 
 Full deb/rpm bundles for the GPUI binary (AppImage + install flow only),
-release-LTO verification beyond `cargo check --profile=release`, non-GNOME
-DE auto-registration.
+release-LTO verification beyond `cargo check --profile=release`, shortcut
+auto-registration for DEs other than GNOME and COSMIC.

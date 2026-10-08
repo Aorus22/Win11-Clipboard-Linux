@@ -33,7 +33,7 @@ fn gsettings(args: &[&str]) -> Result<String, String> {
 
 /// Resolves through `app_state::launcher_path()` so an AppImage registers the
 /// AppImage file, not the transient mount path `current_exe()` reports there.
-fn current_exe_toggle() -> String {
+pub(crate) fn current_exe_toggle() -> String {
     format!("{} --toggle", crate::app_state::launcher_path())
 }
 

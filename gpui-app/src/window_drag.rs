@@ -12,12 +12,15 @@
 //! events: the window follows the pointer, so the pointer barely moves *within*
 //! the window and its local motion deltas are useless for positioning.
 
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
-    AtomEnum, ConfigureWindowAux, ConnectionExt, KeyButMask, MapState, PropMode,
+    AtomEnum, ChangeWindowAttributesAux, ConfigureWindowAux, ConnectionExt, InputFocus,
+    KeyButMask, MapState, PropMode, StackMode,
 };
+use x11rb::CURRENT_TIME;
 use x11rb::wrapper::ConnectionExt as _;
 use x11rb::rust_connection::RustConnection;
 
@@ -30,6 +33,9 @@ const MAX_DRAG: Duration = Duration::from_secs(30);
 
 /// Physical-pixel slack when matching the popup by size.
 const SIZE_TOLERANCE: i32 = 32;
+
+/// Smallest height that can still be the popup (skips gpui's 1x1 helper).
+const MIN_POPUP_HEIGHT: i32 = 200;
 
 /// Result of one drag step.
 pub enum Tick {
@@ -192,6 +198,31 @@ impl WindowDrag {
     }
 }
 
+/// Top-level candidates for this process's windows: the root's children plus
+/// *their* children.
+///
+/// A reparenting window manager (cosmic-comp's Smithay XWM, mutter) wraps each
+/// client in a frame that is the root's child, so the client — the window with
+/// `WM_CLASS`/`_NET_WM_PID` — sits one level down. Scanning the root alone
+/// finds nothing there, which silently disabled every popup move/map/unmap.
+/// The child queries are pipelined, so this costs one round-trip of latency.
+fn candidate_windows(conn: &RustConnection, root: u32) -> Result<Vec<u32>, String> {
+    let top = conn
+        .query_tree(root)
+        .map_err(|error| format!("query_tree error: {error}"))?
+        .reply()
+        .map_err(|error| format!("query_tree reply: {error}"))?
+        .children;
+    let cookies: Vec<_> = top.iter().map(|window| conn.query_tree(*window)).collect();
+    let mut all = top;
+    for cookie in cookies {
+        if let Some(reply) = cookie.ok().and_then(|cookie| cookie.reply().ok()) {
+            all.extend(reply.children);
+        }
+    }
+    Ok(all)
+}
+
 /// Connect to the X server and resolve the default root window.
 fn connect_root() -> Result<(RustConnection, u32), String> {
     let (conn, screen) =
@@ -247,7 +278,9 @@ pub fn move_popup_to(app_id: &str, physical_size: (f32, f32), x: i32, y: i32) ->
 /// window go through the WM as `ConfigureRequest`s, and Mutter silently
 /// clamps absurd positions (e.g. -10000) back onscreen — verified live: the
 /// server accepted the move yet the window stayed put. Unmapping is honored
-/// unconditionally, so hide = unmap, show = move + map.
+/// unconditionally, so hide = unmap, show = move + map. Showing additionally
+/// installs the chrome-less/taskbar-less properties (see
+/// [`apply_managed_window_hints`]) so every map carries them.
 pub fn set_popup_mapped(
     app_id: &str,
     physical_size: (f32, f32),
@@ -267,10 +300,25 @@ pub fn set_popup_mapped(
         false,
     )?;
     if mapped {
+        let unmanaged = unmanaged_popup_enabled();
+        if unmanaged {
+            // Must be set while unmapped; takes effect on the map below.
+            if let Err(error) = set_override_redirect(&conn, window) {
+                eprintln!("[gpui-app] popup override-redirect not applied: {error}");
+            }
+        } else if let Err(error) = apply_managed_window_hints(&conn, window) {
+            eprintln!("[gpui-app] popup WM hints not applied: {error}");
+        }
         conn.map_window(window)
             .map_err(|error| format!("MapWindow error: {error}"))?
             .check()
             .map_err(|error| format!("MapWindow rejected: {error}"))?;
+        if unmanaged {
+            // No WM manages the window, so nothing raises or focuses it.
+            if let Err(error) = raise_and_focus(&conn, window) {
+                eprintln!("[gpui-app] popup raise/focus failed: {error}");
+            }
+        }
     } else {
         conn.unmap_window(window)
             .map_err(|error| format!("UnmapWindow error: {error}"))?
@@ -279,6 +327,181 @@ pub fn set_popup_mapped(
     }
     conn.flush()
         .map_err(|error| format!("flush error: {error}"))?;
+    Ok(())
+}
+
+/// COSMIC: show the popup as an override-redirect window.
+///
+/// cosmic-comp paints a title bar on managed X11 windows and lists every one
+/// in its dock, ignoring the window-type / skip-taskbar hints mutter honours.
+/// An override-redirect window is never managed — like a menu or tooltip it
+/// gets no decorations and no dock entry. The catch is keyboard focus: the WM
+/// no longer hands it out, so [`raise_and_focus`] asks for it explicitly
+/// (verified working on cosmic-comp's XWayland). `WIN11_CLIPBOARD_COSMIC_UNMANAGED=0`
+/// opts out, falling back to the managed window with [`apply_managed_window_hints`].
+fn unmanaged_popup_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        let enabled = crate::cosmic_shortcut::is_cosmic()
+            && std::env::var("WIN11_CLIPBOARD_COSMIC_UNMANAGED").as_deref() != Ok("0");
+        if enabled {
+            eprintln!("[gpui-app] popup shown as override-redirect (COSMIC unmanaged mode)");
+        }
+        enabled
+    })
+}
+
+/// Take the permanent 1×1 holder window out of the window manager's hands.
+///
+/// The holder is opened with `show: false`, but gpui's X11 backend maps it
+/// anyway; mutter keeps a NOTIFICATION-type window out of the dock, cosmic-comp
+/// lists it as a running app. Same remedy as the popup: unmap, flag
+/// override-redirect, map again (1×1 and transparent, so nothing is visible).
+/// No-op unless COSMIC unmanaged mode is on. Fails while the holder window does
+/// not exist yet, so callers retry.
+pub fn unmanage_holder(app_id: &str) -> Result<(), String> {
+    if !unmanaged_popup_enabled() {
+        return Ok(());
+    }
+    let (conn, root) = connect_root()?;
+    let net_wm_pid = atom(&conn, b"_NET_WM_PID")?;
+    let holder = candidate_windows(&conn, root)?
+        .into_iter()
+        .find(|&window| {
+            let ours = window_class(&conn, window)
+                .map(|class| {
+                    class
+                        .windows(app_id.len())
+                        .any(|chunk| chunk == app_id.as_bytes())
+                })
+                .unwrap_or(false)
+                && window_pid(&conn, net_wm_pid, window) == Some(std::process::id());
+            ours && conn
+                .get_geometry(window)
+                .ok()
+                .and_then(|cookie| cookie.reply().ok())
+                .map(|geo| geo.width <= 2 && geo.height <= 2)
+                .unwrap_or(false)
+        })
+        .ok_or_else(|| "holder window not found".to_string())?;
+    conn.unmap_window(holder)
+        .map_err(|error| format!("UnmapWindow error: {error}"))?
+        .check()
+        .map_err(|error| format!("UnmapWindow rejected: {error}"))?;
+    set_override_redirect(&conn, holder)?;
+    conn.map_window(holder)
+        .map_err(|error| format!("MapWindow error: {error}"))?
+        .check()
+        .map_err(|error| format!("MapWindow rejected: {error}"))?;
+    conn.flush()
+        .map_err(|error| format!("flush error: {error}"))?;
+    eprintln!("[gpui-app] holder window unmanaged (0x{holder:x})");
+    Ok(())
+}
+
+fn set_override_redirect(conn: &RustConnection, window: u32) -> Result<(), String> {
+    conn.change_window_attributes(window, &ChangeWindowAttributesAux::new().override_redirect(1))
+        .map_err(|error| format!("ChangeWindowAttributes error: {error}"))?
+        .check()
+        .map_err(|error| format!("ChangeWindowAttributes rejected: {error}"))
+}
+
+fn raise_and_focus(conn: &RustConnection, window: u32) -> Result<(), String> {
+    conn.configure_window(
+        window,
+        &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
+    )
+    .map_err(|error| format!("raise error: {error}"))?
+    .check()
+    .map_err(|error| format!("raise rejected: {error}"))?;
+    conn.set_input_focus(InputFocus::PARENT, window, CURRENT_TIME)
+        .map_err(|error| format!("SetInputFocus error: {error}"))?
+        .check()
+        .map_err(|error| format!("SetInputFocus rejected: {error}"))
+}
+
+/// Intern one atom, or explain why not.
+fn atom(conn: &RustConnection, name: &[u8]) -> Result<u32, String> {
+    conn.intern_atom(false, name)
+        .map_err(|error| format!("intern_atom error: {error}"))?
+        .reply()
+        .map_err(|error| format!("intern_atom reply: {error}"))
+        .map(|reply| reply.atom)
+}
+
+/// First successful hints installation, for the one-line diagnostics log.
+static HINTS_ANNOUNCED: OnceLock<()> = OnceLock::new();
+
+/// Make window managers treat the popup as chrome-less and taskbar-less.
+///
+/// cosmic-comp decides server-side decorations for X11 windows from
+/// `_MOTIF_WM_HINTS` alone — smithay's xwm has no window-type check — and
+/// paints its SSD title bar (min/max/close) unless the hints say the client
+/// wants *no* decorations. gpui only writes those hints for windows created
+/// with `window_decorations: Some(..)`, which the popup is not, so COSMIC
+/// crowned the popup with a compositor title bar on top of its own rounded
+/// card. Sending the same five-word payload gpui uses for
+/// `WindowDecorations::Client` (`[DECORATIONS, 0, 0, 0, 0]`) drops the SSD;
+/// mutter and KWin read the identical property and already show the popup
+/// bare, so this is a no-op for them.
+///
+/// `_NET_WM_STATE` SKIP_TASKBAR/SKIP_PAGER is the EWMH way to stay out of
+/// taskbars and pagers on WMs that don't infer it from the NOTIFICATION
+/// window type. COSMIC's dock ignores both (it exposes every mapped toplevel
+/// unfiltered) — a documented limitation, not something a property can fix.
+///
+/// Called immediately before every map: EWMH takes a window's initial state
+/// from the properties present at map time, and re-asserting per show keeps
+/// us correct even if a WM rewrote the properties while unmapped.
+fn apply_managed_window_hints(conn: &RustConnection, window: u32) -> Result<(), String> {
+    let motif_hints = atom(conn, b"_MOTIF_WM_HINTS")?;
+    conn.change_property32(
+        PropMode::REPLACE,
+        window,
+        motif_hints,
+        motif_hints,
+        // flags = DECORATIONS present; functions = all; decorations = none.
+        &[1 << 1, 0, 0, 0, 0],
+    )
+    .map_err(|error| format!("ChangeProperty _MOTIF_WM_HINTS error: {error}"))?
+    .check()
+    .map_err(|error| format!("ChangeProperty _MOTIF_WM_HINTS rejected: {error}"))?;
+
+    let net_wm_state = atom(conn, b"_NET_WM_STATE")?;
+    let skip_taskbar = atom(conn, b"_NET_WM_STATE_SKIP_TASKBAR")?;
+    let skip_pager = atom(conn, b"_NET_WM_STATE_SKIP_PAGER")?;
+    conn.change_property32(
+        PropMode::REPLACE,
+        window,
+        net_wm_state,
+        AtomEnum::ATOM,
+        &[skip_taskbar, skip_pager],
+    )
+    .map_err(|error| format!("ChangeProperty _NET_WM_STATE error: {error}"))?
+    .check()
+    .map_err(|error| format!("ChangeProperty _NET_WM_STATE rejected: {error}"))?;
+
+    // Re-assert what gpui's X11 backend sets for `WindowKind::PopUp`, so the
+    // full trio is on record even if a future gpui stops writing it.
+    let net_wm_window_type = atom(conn, b"_NET_WM_WINDOW_TYPE")?;
+    let notification = atom(conn, b"_NET_WM_WINDOW_TYPE_NOTIFICATION")?;
+    conn.change_property32(
+        PropMode::REPLACE,
+        window,
+        net_wm_window_type,
+        AtomEnum::ATOM,
+        &[notification],
+    )
+    .map_err(|error| format!("ChangeProperty _NET_WM_WINDOW_TYPE error: {error}"))?
+    .check()
+    .map_err(|error| format!("ChangeProperty _NET_WM_WINDOW_TYPE rejected: {error}"))?;
+
+    if HINTS_ANNOUNCED.set(()).is_ok() {
+        eprintln!(
+            "[gpui-app] popup X11 hints installed on 0x{window:x} \
+             (motif: no decorations; state: skip-taskbar/skip-pager; type: notification)"
+        );
+    }
     Ok(())
 }
 
@@ -295,7 +518,7 @@ pub fn set_popup_mapped(
 #[allow(dead_code)]
 pub fn popup_geometry(app_id: &str) -> Option<(i32, i32, i32, i32)> {
     let (conn, root) = connect_root().ok()?;
-    let tree = conn.query_tree(root).ok()?.reply().ok()?;
+    let windows = candidate_windows(&conn, root).ok()?;
     let net_wm_pid = conn
         .intern_atom(false, b"_NET_WM_PID")
         .ok()?
@@ -304,7 +527,7 @@ pub fn popup_geometry(app_id: &str) -> Option<(i32, i32, i32, i32)> {
         .atom;
     let pid = std::process::id();
     let mut best: Option<(i32, i32, i32, i32)> = None;
-    for window in tree.children {
+    for window in windows {
         let Some(class) = window_class(&conn, window) else {
             continue;
         };
@@ -356,7 +579,7 @@ pub fn popup_geometry(app_id: &str) -> Option<(i32, i32, i32, i32)> {
 /// surface, which keeps the Settings/Wizard windows from matching.
 pub fn popup_window_id(app_id: &str) -> Option<u32> {
     let (conn, root) = connect_root().ok()?;
-    let tree = conn.query_tree(root).ok()?.reply().ok()?;
+    let windows = candidate_windows(&conn, root).ok()?;
     let net_wm_pid = conn
         .intern_atom(false, b"_NET_WM_PID")
         .ok()?
@@ -365,7 +588,7 @@ pub fn popup_window_id(app_id: &str) -> Option<u32> {
         .atom;
     let pid = std::process::id();
     let mut best: Option<(u32, i64)> = None;
-    for window in tree.children {
+    for window in windows {
         let Some(class) = window_class(&conn, window) else {
             continue;
         };
@@ -411,11 +634,7 @@ fn locate_popup_window(
     expected: (i32, i32),
     mapped_only: bool,
 ) -> Result<u32, String> {
-    let tree = conn
-        .query_tree(root)
-        .map_err(|error| format!("query_tree error: {error}"))?
-        .reply()
-        .map_err(|error| format!("query_tree reply: {error}"))?;
+    let windows = candidate_windows(conn, root)?;
     let net_wm_pid = conn
         .intern_atom(false, b"_NET_WM_PID")
         .map_err(|error| format!("intern_atom error: {error}"))?
@@ -423,7 +642,7 @@ fn locate_popup_window(
         .map_err(|error| format!("intern_atom reply: {error}"))?
         .atom;
     let mut candidates = Vec::new();
-    for window in tree.children {
+    for window in windows {
         let class = match window_class(conn, window) {
             Some(class) => class,
             None => continue,
@@ -469,8 +688,13 @@ fn locate_popup_window(
         }
         let Some(geo) = geo else { continue };
         let (width, height) = (i32::from(geo.width), i32::from(geo.height));
+        // Width pins the popup apart from Settings/Setup (wider) and gpui's 1x1
+        // helper window. Height is only bounded: cosmic-comp shrinks windows
+        // that would not fit under its panel (observed 560 -> 478), so an
+        // exact height match would reject the real popup.
         if (width - expected.0).abs() > SIZE_TOLERANCE
-            || (height - expected.1).abs() > SIZE_TOLERANCE
+            || height < MIN_POPUP_HEIGHT
+            || height > expected.1 + SIZE_TOLERANCE
         {
             continue;
         }
@@ -557,24 +781,19 @@ fn locate_window_by_title(
     root: u32,
     title: &str,
 ) -> Result<u32, String> {
-    let tree = conn
-        .query_tree(root)
-        .map_err(|error| format!("query_tree error: {error}"))?
-        .reply()
-        .map_err(|error| format!("query_tree reply: {error}"))?;
+    let windows = candidate_windows(conn, root)?;
     let net_wm_pid = conn
         .intern_atom(false, b"_NET_WM_PID")
         .map_err(|error| format!("intern_atom error: {error}"))?
         .reply()
         .map_err(|error| format!("intern_atom reply: {error}"))?
         .atom;
-    let candidates = tree
-        .children
+    let candidates = windows
         .iter()
         .map(|window| format!("{window:#x}"))
         .collect::<Vec<_>>()
         .join(", ");
-    for window in tree.children {
+    for window in windows {
         if window_pid(conn, net_wm_pid, window) != Some(std::process::id()) {
             continue;
         }

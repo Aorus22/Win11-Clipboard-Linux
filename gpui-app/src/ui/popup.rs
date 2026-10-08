@@ -1324,7 +1324,7 @@ fn render_section_header(
 /// On X11 the window is moved by us — `window_drag` explains why the WM path
 /// mutter offers cannot work for this window type. Everywhere else the
 /// compositor owns the move, and gpui already holds the pointer serial it needs.
-fn start_window_drag(window: &mut Window, cx: &mut Context<Popup>) {
+fn start_window_drag(window: &mut Window, _cx: &mut Context<Popup>) {
     use crate::window_drag::{POLL_INTERVAL, Tick, WindowDrag};
 
     // The X window id is located server-side (pid + class + size match); gpui
@@ -1360,18 +1360,16 @@ fn start_window_drag(window: &mut Window, cx: &mut Context<Popup>) {
         drag.start_position().1,
         drag.root(),
     ));
-    cx.spawn(async move |this, cx| {
+    // Own thread, not the gpui foreground executor: the tick must keep its
+    // 60 Hz cadence while the main thread renders (the executor loop stretched
+    // ticks to ~100 ms under load, which read as a juddering window). The
+    // drag owns its X connection, and ends on button release (or when the
+    // server rejects a move because the popup is gone).
+    std::thread::spawn(move || {
         loop {
-            // Stop once the popup is gone or the left button is released; the
-            // drag loop owns the pointer check precisely because the window
-            // follows the pointer, so gpui sees almost no local motion.
-            if this.update(cx, |_, _| ()).is_err() {
-                crate::drag_log::log("drag stopped: popup closed");
-                break;
-            }
             match drag.tick() {
                 Tick::Moved(x, y) => {
-                    crate::drag_log::log(format!("moved to ({x},{y})"));
+                    crate::drag_log::trace(format!("moved to ({x},{y})"));
                 }
                 Tick::Still => {}
                 Tick::Finished(reason) => {
@@ -1384,10 +1382,9 @@ fn start_window_drag(window: &mut Window, cx: &mut Context<Popup>) {
                     break;
                 }
             }
-            cx.background_executor().timer(POLL_INTERVAL).await;
+            std::thread::sleep(POLL_INTERVAL);
         }
-    })
-    .detach();
+    });
 }
 
 /// Drag strip — port of `DragHandle.tsx`: centered pill + close button.

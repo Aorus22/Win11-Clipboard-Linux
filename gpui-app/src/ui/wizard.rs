@@ -122,19 +122,22 @@ impl WizardState {
     fn register_shortcut(&mut self, cx: &mut Context<Self>) {
         self.registering = true;
         cx.notify();
-        // GNOME: own gpui-pathed registration; elsewhere fall through to the
-        // manual instructions (backend writers target the Tauri wrapper).
-        if crate::gnome_shortcut::is_gnome() {
-            match crate::gnome_shortcut::register() {
-                Ok(_) => {
-                    self.shortcut_registered = true;
-                    // Parity micro-delta: React advances after a 1.5s beat; advance at once.
-                    self.step = 3;
-                }
-                Err(_) => self.show_manual = true,
-            }
+        // GNOME/COSMIC: own gpui-pathed registration; elsewhere fall through to
+        // the manual instructions (backend writers target the Tauri wrapper).
+        let registered = if crate::cosmic_shortcut::is_cosmic() {
+            Some(crate::cosmic_shortcut::register())
+        } else if crate::gnome_shortcut::is_gnome() {
+            Some(crate::gnome_shortcut::register())
         } else {
-            self.show_manual = true;
+            None
+        };
+        match registered {
+            Some(Ok(_)) => {
+                self.shortcut_registered = true;
+                // Parity micro-delta: React advances after a 1.5s beat; advance at once.
+                self.step = 3;
+            }
+            Some(Err(_)) | None => self.show_manual = true,
         }
         self.registering = false;
         cx.notify();

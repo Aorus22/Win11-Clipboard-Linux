@@ -156,7 +156,7 @@ async fn query_portal_color_scheme() -> Result<ColorScheme, Box<dyn std::error::
 
 /// Fallback: Read COSMIC's theme config file directly
 /// Path: ~/.config/cosmic/com.system76.CosmicTheme.Mode/v1/is_dark
-fn read_cosmic_theme_file() -> Result<bool, Box<dyn std::error::Error>> {
+pub fn read_cosmic_theme_file() -> Result<bool, Box<dyn std::error::Error>> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     let config_path = home.join(".config/cosmic/com.system76.CosmicTheme.Mode/v1/is_dark");
 

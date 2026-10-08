@@ -6,7 +6,7 @@
 //! process, so the file always describes the newest run) and mirrors it to
 //! stderr so a terminal run shows the same thing.
 //!
-//! Set `WIN11_CLIPBOARD_DRAG_LOG=0` to silence it.
+//! Set `WIN11_CLIPBOARD_DRAG_LOG=0` to silence it, `=2` to also trace every move.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -31,6 +31,14 @@ fn prepare() {
     PREPARED.get_or_init(|| {
         let _ = std::fs::write(path(), b"");
     });
+}
+
+/// Per-step trace (one line per window move). Written to a file and stderr from
+/// inside the drag loop, so it is opt-in: `WIN11_CLIPBOARD_DRAG_LOG=2`.
+pub fn trace(message: impl std::fmt::Display) {
+    if std::env::var("WIN11_CLIPBOARD_DRAG_LOG").as_deref() == Ok("2") {
+        log(message);
+    }
 }
 
 /// Append one trace line, tagged with the wall clock so drag steps can be timed.

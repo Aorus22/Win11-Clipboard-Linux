@@ -139,6 +139,17 @@ The 5-step setup wizard opens automatically:
    Super+V via gsettings, pointing at the AppImage path (never the transient
    `/tmp/.mount_...` path), so the binding survives reboots. Headless variant
    for scripts: `--register-shortcuts` / `--unregister-shortcuts`.
+   **COSMIC:** the same wizard step / flags write the entries to
+   `~/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom`
+   (visible under Settings → Keyboard → Custom Shortcuts); a `.bak` copy of
+   the original file is kept next to it. "System" theme follows COSMIC's
+   `com.system76.CosmicTheme.Mode` config.
+   **COSMIC popup chrome:** cosmic-comp ignores the window-type/skip-taskbar
+   hints that keep the popup out of the GNOME dock, so on COSMIC the popup and
+   the 1×1 holder window are override-redirect (unmanaged) X11 windows: no
+   title bar, no dock entry, keyboard focus requested explicitly. Set
+   `WIN11_CLIPBOARD_COSMIC_UNMANAGED=0` to fall back to a managed window
+   (`_MOTIF_WM_HINTS` without decorations, but it stays in the dock).
    Verify:
 
    ```bash

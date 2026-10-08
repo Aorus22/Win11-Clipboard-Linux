@@ -143,10 +143,17 @@ pub fn settings_mtime() -> Option<std::time::SystemTime> {
         .ok()
 }
 
-/// GNOME `color-scheme` probe — the fallback for `theme_mode == "system"` and
+/// COSMIC config / GNOME `color-scheme` probe — the fallback for `theme_mode == "system"` and
 /// for `"gtk"` when no GTK palette could be read. The XDG portal listener lives
 /// in `theme_watch` (SYS-04).
 pub fn system_prefers_dark() -> bool {
+    // COSMIC does not drive the GNOME schema (it may exist but stay "default"),
+    // so its own config is the source of truth there.
+    if crate::cosmic_shortcut::is_cosmic() {
+        if let Ok(is_dark) = win11_clipboard_history_lib::theme_manager::read_cosmic_theme_file() {
+            return is_dark;
+        }
+    }
     if let Ok(output) = std::process::Command::new("gsettings")
         .args([
             "get",
