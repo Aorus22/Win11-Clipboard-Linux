@@ -23,7 +23,7 @@ pub fn icon(name: &str, size: Pixels) -> Canvas<()> {
             let color = window.text_style().color;
             // gpui's own `svg()` element swallows this error and paints nothing,
             // which reads as a silently missing icon — surface it instead.
-            if let Err(error) = window.paint_svg(bounds, path.clone(), Default::default(), color, cx)
+            if let Err(error) = window.paint_svg(bounds, path.clone(), None, Default::default(), color, cx)
             {
                 eprintln!("[icon] {}: {error}", path);
             }

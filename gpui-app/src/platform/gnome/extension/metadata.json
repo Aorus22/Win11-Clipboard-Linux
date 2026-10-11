@@ -1,0 +1,8 @@
+{
+  "uuid": "clipboard-history-gpui@win11-clipboard.dev",
+  "name": "Clipboard History (GPUI) helper",
+  "description": "Places and dismisses the Clipboard History popup on GNOME Wayland, where a client cannot position its own window.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "url": "https://github.com/gustavosett/Windows-11-Clipboard-History-For-Linux",
+  "version": 1
+}

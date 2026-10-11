@@ -317,9 +317,11 @@ impl SettingsState {
         // Synchronous (parity outcome; no spinner — the call blocks briefly).
         // GNOME: own gpui-pathed registration. Elsewhere: manual instructions with
         // our binary path (backend DE writers target the Tauri wrapper — not reused).
-        if crate::gnome_shortcut::is_gnome() {
+        if crate::platform::shortcuts::current_desktop()
+            == crate::platform::shortcuts::Desktop::Gnome
+        {
             self.shortcut_status = Some(
-                crate::gnome_shortcut::register()
+                crate::platform::shortcuts::gnome::register()
                     .map(|_| "Shortcuts registered successfully!".to_string()),
             );
         } else {

@@ -212,7 +212,7 @@ fn category_strip(
             .hover(move |s| s.bg(hover))
             .on_click(cx.listener(move |_, _, _, cx| {
                 // Offsets are negative while scrolled, so left is +delta.
-                let max = f32::from(bar.max_offset().width).max(0.0);
+                let max = f32::from(bar.max_offset().x).max(0.0);
                 let x = (f32::from(bar.offset().x) + delta).clamp(-max, 0.0);
                 let y = bar.offset().y;
                 bar.set_offset(point(px(x), y));
@@ -682,7 +682,7 @@ fn render_emoji_grid_virtual(
             .min_h(px(0.))
             // Definite list width (see content_w above).
             .w(px(content_w))
-            .track_scroll(scroll),
+            .track_scroll(&scroll),
             repaint,
         ))
         .into_any_element()
@@ -796,7 +796,7 @@ fn render_symbol_grid_virtual(
             .min_h(px(0.))
             // Definite list width (see content_w above).
             .w(px(content_w))
-            .track_scroll(scroll),
+            .track_scroll(&scroll),
             repaint,
         ))
         .into_any_element()
@@ -926,7 +926,7 @@ fn render_kaomoji_grid_virtual(
             .min_h(px(0.))
             // Definite list width (see content_w above).
             .w(px(content_w))
-            .track_scroll(scroll),
+            .track_scroll(&scroll),
             repaint,
         ))
         .into_any_element()

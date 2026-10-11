@@ -343,7 +343,7 @@ impl TextField {
             .track_focus(&self.focus)
             .on_click(cx.listener(move |this, _, window: &mut Window, cx| {
                 let field = select(this);
-                field.focus.focus(window);
+                field.focus.focus(window, cx);
                 field.sel_anchor = None;
                 cx.notify();
             }))

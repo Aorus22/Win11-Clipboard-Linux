@@ -41,6 +41,8 @@ pub struct WizardState {
     pub registering: bool,
     pub shortcut_registered: bool,
     pub show_manual: bool,
+    /// Result of installing the GNOME Shell helper extension, when one ran.
+    pub extension_note: Option<Result<String, String>>,
     pub resolving: bool,
     pub conflicts_resolved: bool,
     pub conflict_error: Option<String>,
@@ -68,6 +70,7 @@ impl WizardState {
             registering: false,
             shortcut_registered: false,
             show_manual: false,
+            extension_note: None,
             resolving: false,
             conflicts_resolved: false,
             conflict_error: None,
@@ -124,16 +127,11 @@ impl WizardState {
         cx.notify();
         // GNOME/COSMIC: own gpui-pathed registration; elsewhere fall through to
         // the manual instructions (backend writers target the Tauri wrapper).
-        let registered = if crate::cosmic_shortcut::is_cosmic() {
-            Some(crate::cosmic_shortcut::register())
-        } else if crate::gnome_shortcut::is_gnome() {
-            Some(crate::gnome_shortcut::register())
-        } else {
-            None
-        };
+        let registered = crate::platform::shortcuts::register();
         match registered {
             Some(Ok(_)) => {
                 self.shortcut_registered = true;
+                self.extension_note = crate::platform::setup_desktop_integration();
                 // Parity micro-delta: React advances after a 1.5s beat; advance at once.
                 self.step = 3;
             }
@@ -632,6 +630,19 @@ impl WizardState {
                     "success",
                     icons::CHECK_CIRCLE,
                     div().child("Shortcut registered successfully!").into_any_element(),
+                )),
+            );
+        }
+        if let Some(note) = self.extension_note.clone() {
+            let (kind, icon, text) = match note {
+                Ok(text) => ("success", icons::CHECK_CIRCLE, text),
+                Err(text) => ("warning", icons::ALERT_CIRCLE, text),
+            };
+            body = body.child(
+                div().w_full().mb(px(16.)).child(self.status_card(
+                    kind,
+                    icon,
+                    div().child(text).into_any_element(),
                 )),
             );
         }

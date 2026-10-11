@@ -13,23 +13,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    App, Application, AssetSource, Bounds, Context, Render, SharedString, Size, Window,
-    WindowBounds, WindowDecorations, WindowHandle, WindowKind, WindowOptions, div, point,
+    App, AssetSource, Bounds, Context, Render, SharedString, Size, Window,
+    WindowBounds, WindowDecorations, WindowHandle, WindowOptions, div, point,
     prelude::*, px,
 };
 
 mod app_state;
 mod backend;
-mod click_watch;
-mod cosmic_shortcut;
 mod drag_log;
 mod geometry;
-mod gnome_shortcut;
 mod gtk_theme;
 mod history;
-mod hotkey;
 mod instance;
 mod pickers;
+mod platform;
 mod settings;
 #[cfg(test)]
 mod test_util;
@@ -37,16 +34,15 @@ mod theme;
 mod theme_watch;
 mod tray;
 mod ui;
-mod window_drag;
 
 use app_state::Shared;
 use backend::BackendService;
-use geometry::{MonitorRect, bottom_center, clamp_to_monitor, cursor_position};
+use geometry::{MonitorRect, bottom_center, clamp_to_monitor};
 use instance::{AppSignal, InstanceRole};
 use ui::popup::{Popup, Tab};
 use ui::settings::SettingsState;
 use ui::wizard::WizardState;
-use win11_clipboard_history_lib::{focus_manager, session};
+use win11_clipboard_history_lib::focus_manager;
 
 /// Separate app-id from the Tauri build so both can coexist (SYS-06).
 const APP_ID: &str = "dev.gustavosett.clipboard-history-gpui";
@@ -62,8 +58,13 @@ const SETUP_H: f32 = 650.0;
 
 /// Offscreen origin where the persistent popup is created while "hidden".
 /// Best effort only: the WM may clamp it onscreen, which is why hiding also
-/// unmaps the window (see `window_drag::set_popup_mapped`).
+/// unmaps the window (see `PlatformBackend::set_popup_visible`).
 const PARKED_POS: (f32, f32) = (-10000.0, -10000.0);
+
+/// Title of the popup window. It has no title bar, so it is never shown; it
+/// only lets a compositor-side helper tell the popup apart from Settings/Setup
+/// (same app id).
+const POPUP_TITLE: &str = "Clipboard History Popup";
 
 /// Physical X-window size of the popup (bounds x scale factor — see the drag
 /// path for why `viewport_size()` can't be used on HiDPI).
@@ -73,7 +74,7 @@ fn popup_physical_size(
 ) -> Option<(f32, f32)> {
     handle
         .update(cx, |_, window, _| {
-            let scale = window.scale_factor();
+            let scale = platform::backend().coordinate_scale(window.scale_factor());
             let bounds = window.bounds().size;
             (
                 bounds.width.to_f64() as f32 * scale,
@@ -83,25 +84,27 @@ fn popup_physical_size(
         .ok()
 }
 
-/// Display scale factor of the popup's window — the factor between gpui's
-/// logical coordinates and the physical frame the cursor and `move_popup_to`
-/// use (2.0 on a 3072x1728 screen reporting `Xft.dpi: 192`).
+/// Factor between gpui's logical coordinates and the frame the cursor and
+/// `place_popup` use: the display scale on X11 (2.0 on a 3072x1728 screen
+/// reporting `Xft.dpi: 192`), 1 on backends working in compositor-logical px.
 fn popup_scale_factor(handle: &WindowHandle<Popup>, cx: &mut gpui::AsyncApp) -> Option<f32> {
     handle
-        .update(cx, |_, window, _| window.scale_factor())
+        .update(cx, |_, window, _| {
+            platform::backend().coordinate_scale(window.scale_factor())
+        })
         .ok()
 }
 
-/// Move the persistent popup's X11 window (show → cursor-follow position,
+/// Move the persistent popup's window (show → cursor-follow position,
 /// hide → [`PARKED_POS`]) without touching the GPUI window itself.
 ///
-/// gpui 0.2.2 exposes no per-window move/hide, so this goes straight to the
-/// server like the client-side drag does. Logs and continues on failure
-/// (native Wayland has no X window to configure).
+/// gpui 0.2.2 exposes no per-window move/hide, so this goes through the
+/// platform backend like the client-side drag does. Logs and continues on
+/// failure (native Wayland has no X window to configure).
 fn place_popup(handle: &WindowHandle<Popup>, cx: &mut gpui::AsyncApp, x: i32, y: i32) {
     match popup_physical_size(handle, cx) {
         Some(size) => {
-            if let Err(e) = window_drag::move_popup_to(APP_ID, size, x, y) {
+            if let Err(e) = platform::backend().place_popup(size, x, y) {
                 eprintln!("[gpui-app] move popup failed: {e}");
             }
         }
@@ -112,14 +115,24 @@ fn place_popup(handle: &WindowHandle<Popup>, cx: &mut gpui::AsyncApp, x: i32, y:
 /// Hide the persistent popup: unmap its X11 window and hand focus back.
 /// Unmapping (not offscreen parking) is what actually removes a managed
 /// window from the screen.
-fn hide_popup_window(handle: &WindowHandle<Popup>, cx: &mut gpui::AsyncApp) {
+///
+/// An overlay popup is destroyed instead (it covers the whole output, so it
+/// must not linger); returns `true` when the window is gone.
+fn hide_popup_window(handle: &WindowHandle<Popup>, cx: &mut gpui::AsyncApp) -> bool {
+    if platform::backend().popup_surface() == platform::PopupSurface::Overlay {
+        let _ = handle.update(cx, |_, window, _| window.remove_window());
+        let _ = focus_manager::restore_focused_window();
+        focus_manager::note_popup_window(None);
+        return true;
+    }
     if let Some(size) = popup_physical_size(handle, cx) {
-        if let Err(e) = window_drag::set_popup_mapped(APP_ID, size, false) {
+        if let Err(e) = platform::backend().set_popup_visible(size, false) {
             eprintln!("[gpui-app] unmap popup failed: {e}");
         }
     }
     let _ = focus_manager::restore_focused_window();
     focus_manager::note_popup_window(None);
+    false
 }
 
 struct GpuiAssets {
@@ -193,44 +206,9 @@ fn load_bundled_emoji_font(cx: &mut App) {
     }
 }
 
-/// Pin the display backend to X11/XWayland on Wayland sessions.
-///
-/// xdg-shell has no equivalent of `_NET_WM_WINDOW_TYPE_NOTIFICATION`, so a
-/// native-Wayland popup is an ordinary toplevel and GNOME lists it in
-/// Dash-to-Dock while it is open (the Tauri build hits the same wall:
-/// tauri-apps/tauri#9829). gpui's X11 backend tags `WindowKind::PopUp` as
-/// NOTIFICATION — hidden from docks/taskbars — and cursor-follow positioning
-/// for the popup comes back as well.
-///
-/// gpui resolves the backend with `guess_compositor()`, which prefers Wayland
-/// whenever `WAYLAND_DISPLAY` is non-empty, so drop it here — before the
-/// platform initializes. `XDG_SESSION_TYPE` is aligned at the same time so the
-/// shared backend's `session::is_wayland()` (cached on first use) matches the
-/// backend actually in use and takes the X11 focus/positioning paths.
-///
-/// Opt out with `WIN11_CLIPBOARD_ALLOW_WAYLAND=1`.
-fn pin_display_backend_to_x11() {
-    if std::env::var_os("WIN11_CLIPBOARD_ALLOW_WAYLAND").is_some() {
-        return;
-    }
-    if !std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty()) {
-        return; // Already X11, or not a Wayland session at all.
-    }
-    // Without XWayland there is nothing to fall back to — stay on Wayland
-    // rather than starting headless.
-    if !std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty()) {
-        eprintln!("[gpui-app] no DISPLAY (XWayland) available; keeping the Wayland backend");
-        return;
-    }
-    std::env::remove_var("WAYLAND_DISPLAY");
-    std::env::remove_var("WAYLAND_SOCKET");
-    std::env::set_var("XDG_SESSION_TYPE", "x11");
-    eprintln!("[gpui-app] X11/XWayland backend pinned (popup stays out of the dock)");
-}
-
-/// Initial popup origin in **physical** pixels: cursor-follow on X11,
-/// bottom-center on Wayland — matching the Tauri `WindowController` behavior
-/// exactly.
+/// Initial popup origin in **physical** pixels: cursor-follow where the backend
+/// can report the cursor, bottom-center otherwise (native Wayland) — matching
+/// the Tauri `WindowController` behavior exactly.
 ///
 /// `win_w`/`win_h` are the popup's real physical size and `scale` its display
 /// scale factor: gpui hands out display bounds in logical pixels, while the
@@ -250,18 +228,17 @@ fn initial_origin(cx: &App, win_w: i32, win_h: i32, scale: f32) -> (f32, f32) {
     let Some(mon) = first else {
         return (0.0, 0.0);
     };
-    if session::is_wayland() {
-        let (x, y) = bottom_center(&mon, win_w, win_h);
-        return (x as f32, y as f32);
-    }
-    match cursor_position() {
+    match platform::backend().cursor_position() {
         Some((cx_, cy)) => {
             // Prefer the monitor containing the cursor (multi-monitor parity).
-            let mon = cx
-                .displays()
-                .iter()
-                .map(|d| rect_of(d.bounds()).scaled(scale))
-                .find(|m| m.contains(cx_, cy))
+            let mon = platform::backend()
+                .monitor_at(cx_, cy)
+                .or_else(|| {
+                    cx.displays()
+                        .iter()
+                        .map(|d| rect_of(d.bounds()).scaled(scale))
+                        .find(|m| m.contains(cx_, cy))
+                })
                 .unwrap_or(mon);
             let (x, y) = clamp_to_monitor(&mon, win_w, win_h, cx_, cy);
             (x as f32, y as f32)
@@ -274,6 +251,14 @@ fn initial_origin(cx: &App, win_w: i32, win_h: i32, scale: f32) -> (f32, f32) {
 }
 
 fn popup_options(origin: (f32, f32), w: f32, h: f32) -> WindowOptions {
+    // An overlay surface is sized by the compositor (zero = stretch to the
+    // anchored output); the card is drawn inside it by the view.
+    let (origin, w, h) = if platform::backend().popup_surface() == platform::PopupSurface::Overlay
+    {
+        ((0.0, 0.0), 0.0, 0.0)
+    } else {
+        (origin, w, h)
+    };
     let bounds = Bounds::new(
         point(px(origin.0), px(origin.1)),
         Size {
@@ -284,9 +269,16 @@ fn popup_options(origin: (f32, f32), w: f32, h: f32) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: None,
-        window_background: gpui::WindowBackgroundAppearance::Transparent,
+        window_background: if platform::backend().popup_surface()
+            == platform::PopupSurface::Overlay
+            && ui::popup::overlay_blur_enabled()
+        {
+            gpui::WindowBackgroundAppearance::Blurred
+        } else {
+            gpui::WindowBackgroundAppearance::Transparent
+        },
         show: true,
-        kind: WindowKind::PopUp,
+        kind: platform::backend().window_kind(),
         is_movable: true,
         focus: true,
         app_id: Some(APP_ID.into()),
@@ -295,6 +287,17 @@ fn popup_options(origin: (f32, f32), w: f32, h: f32) -> WindowOptions {
 }
 
 fn centered_options(w: f32, h: f32, title: &'static str, cx: &App) -> WindowOptions {
+    // Native Wayland has no `_GTK_FRAME_EXTENTS` growth: the surface is exactly
+    // what is asked for, so the shadow margin is requested up front (and
+    // declared with `set_client_inset` once the window exists).
+    let (w, h) = if platform::backend().native_wayland_windows() {
+        (
+            w + 2.0 * theme::WINDOW_SHADOW_MARGIN,
+            h + 2.0 * theme::WINDOW_SHADOW_MARGIN,
+        )
+    } else {
+        (w, h)
+    };
     // `w`/`h` are the visible card AND the window's frame: mutter grows the
     // client by the `_GTK_FRAME_EXTENTS` we advertise for it (verified live:
     // extents e => client = requested + 2e), and that growth is exactly the
@@ -376,6 +379,7 @@ fn open_popup_window(
             }
         })
         .expect("failed to open GPUI popup window");
+    let _ = handle.update(cx, |_, window, _| window.set_window_title(POPUP_TITLE));
     if start_hidden {
         // Parked: only arm focus-loss dismissal, take neither focus nor
         // activation until the first real show — then withdraw immediately:
@@ -387,7 +391,7 @@ fn open_popup_window(
             cx.notify();
         });
         let size = handle.update(cx, |_, window, _| {
-            let scale = window.scale_factor();
+            let scale = platform::backend().coordinate_scale(window.scale_factor());
             let bounds = window.bounds().size;
             (
                 bounds.width.to_f64() as f32 * scale,
@@ -397,7 +401,7 @@ fn open_popup_window(
         if let Ok(size) = size {
             let mut last_err = String::new();
             for _ in 0..20 {
-                match window_drag::set_popup_mapped(APP_ID, size, false) {
+                match platform::backend().set_popup_visible(size, false) {
                     Ok(()) => {
                         last_err.clear();
                         break;
@@ -420,7 +424,7 @@ fn open_popup_window(
         // text, arrows, Enter) and never reports losing focus, so clicking
         // outside would leave it up.
         window.activate_window();
-        popup.focus.focus(window);
+        popup.focus.focus(window, cx);
         popup.watch_activation(window, cx);
         cx.notify();
     });
@@ -457,14 +461,27 @@ fn open_settings_window(
         .expect("failed to open GPUI settings window");
     let _ = handle.update(cx, |state, window, cx| {
         window.set_window_title("Settings — Clipboard History");
-        state.focus.focus(window);
+        state.focus.focus(window, cx);
         cx.notify();
     });
+    declare_client_inset(&handle, cx);
     let scale = handle
         .update(cx, |_, window, _| window.scale_factor())
         .unwrap_or(1.0);
     advertise_csd_frame("Settings — Clipboard History", scale);
     handle
+}
+
+/// Native Wayland: declare the transparent shadow margin as client inset, so the
+/// compositor frames (shadows, resizes, snaps) the card and not the whole
+/// surface — the Wayland counterpart of `_GTK_FRAME_EXTENTS` below.
+fn declare_client_inset<V: 'static>(handle: &WindowHandle<V>, cx: &mut App) {
+    if !platform::backend().native_wayland_windows() {
+        return;
+    }
+    let _ = handle.update(cx, |_, window, _| {
+        window.set_client_inset(px(theme::WINDOW_SHADOW_MARGIN));
+    });
 }
 
 /// Tell the compositor where the visible frame of a CSD window sits.
@@ -484,7 +501,7 @@ fn advertise_csd_frame(title: &'static str, scale_factor: f32) {
         // gpui's logical margin has to be scaled for the compositor.
         let margin = (theme::WINDOW_SHADOW_MARGIN * scale_factor).round() as u32;
         for _ in 0..40 {
-            if window_drag::set_frame_extents(title, margin).is_ok() {
+            if platform::backend().set_frame_extents(title, margin).is_ok() {
                 return;
             }
             std::thread::sleep(Duration::from_millis(150));
@@ -512,9 +529,10 @@ fn open_wizard_window(
         .expect("failed to open GPUI setup wizard window");
     let _ = handle.update(cx, |state, window, cx| {
         window.set_window_title("Setup — Clipboard History");
-        state.focus.focus(window);
+        state.focus.focus(window, cx);
         cx.notify();
     });
+    declare_client_inset(&handle, cx);
     let scale = handle
         .update(cx, |_, window, _| window.scale_factor())
         .unwrap_or(1.0);
@@ -543,7 +561,7 @@ fn open_holder_window(cx: &mut App) {
             window_background: gpui::WindowBackgroundAppearance::Transparent,
             show: false,
             focus: false,
-            kind: WindowKind::PopUp,
+            kind: gpui::WindowKind::PopUp,
             is_movable: false,
             app_id: Some(APP_ID.into()),
             ..Default::default()
@@ -558,8 +576,8 @@ fn has_arg(args: &[String], flag: &str) -> bool {
 
 fn main() {
     // Must run before the platform is initialized (and before anything caches
-    // the session type) so the whole process agrees on the X11 backend.
-    pin_display_backend_to_x11();
+    // the session type) so the whole process agrees on the chosen backend.
+    platform::init();
 
     // The settings window reads the rendering environment (NVIDIA/AppImage
     // transparency note). The Tauri build initializes this at startup; without
@@ -590,12 +608,7 @@ fn main() {
     }
     // Headless setup helpers (also used by packaging scripts).
     if has_arg(&args, "--register-shortcuts") {
-        let registered = if cosmic_shortcut::is_cosmic() {
-            cosmic_shortcut::register()
-        } else {
-            gnome_shortcut::register()
-        };
-        match registered {
+        match platform::shortcuts::register_headless() {
             Ok(msg) => {
                 println!("{msg}");
                 std::process::exit(0);
@@ -606,13 +619,20 @@ fn main() {
             }
         }
     }
+    if has_arg(&args, "--install-gnome-extension") {
+        match platform::gnome::install::install() {
+            Ok(outcome) => {
+                println!("{}", platform::gnome::install::describe(&outcome));
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("install failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     if has_arg(&args, "--unregister-shortcuts") {
-        let unregistered = if cosmic_shortcut::is_cosmic() {
-            cosmic_shortcut::unregister()
-        } else {
-            gnome_shortcut::unregister()
-        };
-        match unregistered {
+        match platform::shortcuts::unregister_headless() {
             Ok(msg) => {
                 println!("{msg}");
                 std::process::exit(0);
@@ -668,7 +688,7 @@ fn main() {
     // Physical outside-click dismissal (evdev). Independent of focus, so it
     // keeps working on focus-follows-mouse desktops where focus-loss alone
     // cannot tell a hover from a click.
-    click_watch::spawn_click_watcher(shared.clone());
+    platform::backend().spawn_outside_click_watcher(shared.clone());
 
     // GTK is up (or not) at this point; the tray backend needs it and nothing else
     // runs a gtk main loop, so the poll loop below pumps its idle callbacks.
@@ -688,18 +708,28 @@ fn main() {
         None
     };
 
-    Application::new()
+    gpui_platform::application()
+        // Resident app: closing the last window (an overlay popup is destroyed
+        // on every hide) must not end the process; `--quit` and the tray do.
+        .with_quit_mode(gpui::QuitMode::Explicit)
         .with_assets(GpuiAssets { base: assets_dir() })
         .run(move |cx: &mut App| {
             load_bundled_emoji_font(cx);
             // Resident holder first: the app must survive with zero visible windows.
-            open_holder_window(cx);
+            // (Native Wayland backends skip it: there it would be a real window.)
+            let holder = platform::backend().needs_holder_window();
+            if holder {
+                open_holder_window(cx);
+            }
             // COSMIC lists the holder as a running app; retry until gpui has
             // created its X window.
-            std::thread::spawn(|| {
+            std::thread::spawn(move || {
+                if !holder {
+                    return;
+                }
                 let mut last = String::new();
                 for _ in 0..60 {
-                    match window_drag::unmanage_holder(APP_ID) {
+                    match platform::backend().unmanage_holder() {
                         Ok(()) => return,
                         Err(e) => last = e,
                     }
@@ -723,7 +753,7 @@ fn main() {
 
             // Poll loop: backend refresh + tray/menu/hotkey/IPC signals.
             // Tray + hotkeys live here (task-local): no cross-thread sharing.
-            let hotkeys = hotkey::register_hotkeys();
+            let hotkeys = platform::backend().register_global_hotkeys();
             let mut last_theme_dark: Option<bool> = None;
             // GTK theme name + dark preference; a swap can change every color
             // without changing the D-Bus portal's color-scheme, so it is polled.
@@ -803,8 +833,11 @@ fn main() {
                         false,
                     );
                     if hide_requested && popup_visible {
-                        if let Some(h) = popup.as_ref() {
-                            hide_popup_window(h, cx);
+                        let destroyed = popup
+                            .as_ref()
+                            .is_some_and(|h| hide_popup_window(h, cx));
+                        if destroyed {
+                            popup = None;
                         }
                         popup_visible = false;
                     }
@@ -812,6 +845,7 @@ fn main() {
                     for signal in signals {
                         match signal {
                             AppSignal::Toggle => {
+                                crate::drag_log::log(format!("toggle (visible={popup_visible})"));
                                 let st = shared.lock().settings.clone();
                                 // ui_scale changed since the window was built:
                                 // rebuild once (rare), otherwise reuse.
@@ -825,40 +859,41 @@ fn main() {
                                     popup_scale = None;
                                 }
                                 if popup_visible {
-                                    if let Some(h) = popup.as_ref() {
-                                        hide_popup_window(h, cx);
+                                    let destroyed = popup
+                                        .as_ref()
+                                        .is_some_and(|h| hide_popup_window(h, cx));
+                                    if destroyed {
+                                        popup = None;
                                     }
                                     popup_visible = false;
                                 } else {
                                     if popup.is_none() {
-                                        match cx.update(|cx| {
+                                        let h = cx.update(|cx| {
                                             open_popup_window(
                                                 cx,
                                                 &backend,
                                                 &shared,
                                                 st.ui_scale,
                                                 Tab::Clipboard,
-                                                true,
+                                                // Window popups are created parked
+                                                // and shown below; overlays appear
+                                                // right away.
+                                                platform::backend().popup_surface()
+                                                    == platform::PopupSurface::Window,
                                             )
-                                        }) {
-                                            Ok(h) => {
-                                            popup = Some(h);
-                                            popup_scale = Some(st.ui_scale);
-                                            focus_manager::note_popup_window(
-                                                window_drag::popup_window_id(APP_ID),
-                                            );
-                                        }
-                                            Err(e) => {
-                                                eprintln!("[gpui-app] popup open failed: {e:?}")
-                                            }
-                                        }
+                                        });
+                                        popup = Some(h);
+                                        popup_scale = Some(st.ui_scale);
+                                        focus_manager::note_popup_window(
+                                            platform::backend().popup_window_id(),
+                                        );
                                     }
                                     if let Some(h) = popup.as_ref() {
                                         // Show: fresh cursor-follow position,
                                         // fresh content + appear animation,
                                         // then take focus.
                                         focus_manager::note_popup_window(
-                                            window_drag::popup_window_id(APP_ID),
+                                            platform::backend().popup_window_id(),
                                         );
                                         focus_manager::save_focused_window();
                                         // The clamping frame is physical, so it
@@ -887,32 +922,22 @@ fn main() {
                                         let _ = h.update(cx, |popup, _window, cx| {
                                             popup.prepare_for_show(show_tab, cx);
                                         });
-                                        match origin {
-                                            Ok((x, y)) => {
-                                                // Move first (invisible), then
-                                                // map: no onscreen jump.
-                                                place_popup(h, cx, x as i32, y as i32);
-                                                if let Some(size) =
-                                                    popup_physical_size(h, cx)
+                                        {
+                                            let (x, y) = origin;
+                                            // Move first (invisible), then
+                                            // map: no onscreen jump.
+                                            place_popup(h, cx, x as i32, y as i32);
+                                            if let Some(size) = popup_physical_size(h, cx) {
+                                                if let Err(e) =
+                                                    platform::backend().set_popup_visible(size, true)
                                                 {
-                                                    if let Err(e) =
-                                                        window_drag::set_popup_mapped(
-                                                            APP_ID, size, true,
-                                                        )
-                                                    {
-                                                        eprintln!(
-                                                            "[gpui-app] map popup failed: {e}"
-                                                        );
-                                                    }
+                                                    eprintln!("[gpui-app] map popup failed: {e}");
                                                 }
                                             }
-                                            Err(e) => eprintln!(
-                                                "[gpui-app] origin failed: {e:?}"
-                                            ),
                                         }
                                         let _ = h.update(cx, |popup, window, cx| {
                                             window.activate_window();
-                                            popup.focus.focus(window);
+                                            popup.focus.focus(window, cx);
                                             cx.notify();
                                         });
                                         popup_visible = true;
@@ -929,14 +954,9 @@ fn main() {
                                     None => true,
                                 };
                                 if need_open {
-                                    match cx.update(|cx| {
+                                    settings_win = Some(cx.update(|cx| {
                                         open_settings_window(cx, &backend, &shared)
-                                    }) {
-                                        Ok(h) => settings_win = Some(h),
-                                        Err(e) => {
-                                            eprintln!("[gpui-app] settings open failed: {e:?}")
-                                        }
-                                    }
+                                    }));
                                 }
                             }
                             AppSignal::Quit => std::process::exit(0),

@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Animation, AnimationExt, Context, FocusHandle, Focusable, KeyDownEvent, Render,
-    ScrollStrategy, UniformListScrollHandle, Window, div, prelude::*, px,
+    Animation, AnimationExt, Context, FocusHandle, Focusable, KeyDownEvent, Pixels, Point, Render,
+    ScrollStrategy, UniformListScrollHandle, Window, div, point, prelude::*, px,
 };
 use serde::{Deserialize, Serialize};
 
@@ -70,6 +70,28 @@ fn default_expanded() -> bool {
     true
 }
 
+/// Overlay mode (`PopupSurface::Overlay`): the window is a transparent surface
+/// covering the whole output and the popup is a card drawn inside it.
+pub struct OverlayCard {
+    /// Top-left of the card in window px; `None` until the pointer's first
+    /// position tells where the popup should open.
+    pos: Option<Point<Pixels>>,
+    /// Pointer offset inside the card while its header is being dragged.
+    grab: Option<Point<Pixels>>,
+    opened: Instant,
+}
+
+/// Compositor blur behind the overlay card (`ext-background-effect-v1`).
+/// Opt-in with `WIN11_CLIPBOARD_BLUR=1` until it has been checked on a real
+/// compositor; the card is acrylic-tinted either way.
+pub fn overlay_blur_enabled() -> bool {
+    std::env::var("WIN11_CLIPBOARD_BLUR").as_deref() == Ok("1")
+}
+
+/// How long the overlay waits for the pointer's first position before opening
+/// bottom-center instead.
+const OVERLAY_POINTER_WAIT: Duration = Duration::from_millis(150);
+
 pub struct Popup {
     pub backend: Arc<BackendService>,
     pub shared: Shared,
@@ -107,6 +129,8 @@ pub struct Popup {
     /// (see `check_focus_loss_dismiss`): on focus-follows-mouse desktops a
     /// brief excursion must not close the popup, only a real move-away/click.
     focus_loss_armed_at: Option<Instant>,
+    /// `Some` when the popup is an overlay card rather than a window.
+    pub overlay: Option<OverlayCard>,
 }
 
 /// Grace between focus loss (pointer outside) and auto-dismissal. Long
@@ -177,6 +201,13 @@ impl Popup {
             appear_gen: 0,
             activation_watch: None,
             focus_loss_armed_at: None,
+            overlay: (crate::platform::backend().popup_surface()
+                == crate::platform::PopupSurface::Overlay)
+                .then(|| OverlayCard {
+                    pos: None,
+                    grab: None,
+                    opened: Instant::now(),
+                }),
         }
     }
 
@@ -209,7 +240,123 @@ impl Popup {
         self.appear_gen += 1;
         // A stale arm from before the hide must never fire right after a show.
         self.focus_loss_armed_at = None;
+        if let Some(overlay) = self.overlay.as_mut() {
+            *overlay = OverlayCard {
+                pos: None,
+                grab: None,
+                opened: Instant::now(),
+            };
+        }
         cx.notify();
+    }
+
+    /// Card size in window px (the popup's logical size times `ui_scale`).
+    fn overlay_card_size(&self) -> (f32, f32) {
+        (
+            crate::POPUP_W * self.settings.ui_scale,
+            crate::POPUP_H * self.settings.ui_scale,
+        )
+    }
+
+    fn overlay_card_rect(&self, window: &Window) -> Option<(Point<Pixels>, (f32, f32))> {
+        let overlay = self.overlay.as_ref()?;
+        let size = self.overlay_card_size();
+        let pos = overlay.pos.unwrap_or_else(|| {
+            let view = window.viewport_size();
+            let mon = crate::geometry::MonitorRect {
+                x: 0,
+                y: 0,
+                w: f32::from(view.width) as i32,
+                h: f32::from(view.height) as i32,
+            };
+            let (x, y) = crate::geometry::bottom_center(&mon, size.0 as i32, size.1 as i32);
+            point(px(x as f32), px(y as f32))
+        });
+        Some((pos, size))
+    }
+
+    /// Pointer moved over the overlay: places the card on the first position,
+    /// then follows the pointer while the header is dragged.
+    fn overlay_pointer_moved(
+        &mut self,
+        position: Point<Pixels>,
+        pressed: Option<gpui::MouseButton>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let size = self.overlay_card_size();
+        let view = window.viewport_size();
+        let clamp = |pos: Point<Pixels>| {
+            let mon = crate::geometry::MonitorRect {
+                x: 0,
+                y: 0,
+                w: f32::from(view.width) as i32,
+                h: f32::from(view.height) as i32,
+            };
+            let (x, y) = crate::geometry::clamp_to_monitor(
+                &mon,
+                size.0 as i32,
+                size.1 as i32,
+                f32::from(pos.x) as i32,
+                f32::from(pos.y) as i32,
+            );
+            point(px(x as f32), px(y as f32))
+        };
+        let Some(overlay) = self.overlay.as_mut() else {
+            return;
+        };
+        if overlay.pos.is_none() {
+            crate::drag_log::log(format!(
+                "overlay: first pointer position ({:.0},{:.0}) in {:.0}x{:.0}",
+                f32::from(position.x),
+                f32::from(position.y),
+                f32::from(view.width),
+                f32::from(view.height)
+            ));
+            overlay.pos = Some(clamp(position));
+            cx.notify();
+            return;
+        }
+        if pressed != Some(gpui::MouseButton::Left) {
+            overlay.grab = None;
+        }
+        if let Some(grab) = overlay.grab {
+            overlay.pos = Some(clamp(point(position.x - grab.x, position.y - grab.y)));
+            cx.notify();
+        }
+    }
+
+    /// A press on the overlay: outside the card dismisses, on the header strip
+    /// (see [`render_drag_strip`]) starts a drag.
+    fn overlay_mouse_down(
+        &mut self,
+        position: Point<Pixels>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((pos, size)) = self.overlay_card_rect(window) else {
+            return;
+        };
+        let inside = position.x >= pos.x
+            && position.x < pos.x + px(size.0)
+            && position.y >= pos.y
+            && position.y < pos.y + px(size.1);
+        if !inside {
+            crate::drag_log::log("overlay: press outside the card -> hide");
+            self.request_hide();
+            cx.notify();
+        }
+    }
+
+    fn overlay_begin_drag(&mut self, position: Point<Pixels>, window: &Window) {
+        let Some((pos, _)) = self.overlay_card_rect(window) else {
+            return;
+        };
+        let grab = point(position.x - pos.x, position.y - pos.y);
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.pos = Some(pos);
+            overlay.grab = Some(grab);
+        }
     }
 
     /// Whether a pending focus-loss dismissal has matured and should fire.
@@ -629,7 +776,7 @@ impl Popup {
 
         if ctrl && (key == "f" || key == "F") {
             let h = self.search_ref(which).focus.clone();
-            h.focus(window);
+            h.focus(window, cx);
             cx.stop_propagation();
             return;
         }
@@ -697,7 +844,7 @@ impl Popup {
             _ => {
                 if !mods.control && !mods.alt && !mods.platform && key.chars().count() == 1 {
                     let h = self.search_ref(which).focus.clone();
-                    h.focus(window);
+                    h.focus(window, cx);
                     let s = self.search_mut(which);
                     s.text.push_str(key);
                     s.cursor = s.text.len();
@@ -779,9 +926,9 @@ impl Popup {
         if !self.search_visible {
             self.search.clear();
             self.after_filter_change();
-            self.focus.focus(window);
+            self.focus.focus(window, cx);
         } else {
-            self.search.focus.focus(window);
+            self.search.focus.focus(window, cx);
         }
         cx.notify();
     }
@@ -790,7 +937,7 @@ impl Popup {
         self.search_visible = false;
         self.search.clear();
         self.after_filter_change();
-        self.focus.focus(window);
+        self.focus.focus(window, cx);
         cx.notify();
     }
 
@@ -798,7 +945,7 @@ impl Popup {
         if !self.search_visible {
             self.search_visible = true;
             self.search.clear();
-            self.search.focus.focus(window);
+            self.search.focus.focus(window, cx);
         }
         self.search.text.push_str(ch);
         self.search.cursor = self.search.text.len();
@@ -972,12 +1119,16 @@ impl Render for Popup {
         } else {
             self.settings.light_background_opacity
         };
-        div()
+        let overlay_rect = self.overlay_card_rect(window);
+        let card = div()
             .id("popup-root")
             .relative()
             .flex()
             .flex_col()
-            .size_full()
+            .map(|card| match overlay_rect {
+                Some((_, (w, h))) => card.w(px(w)).h(px(h)),
+                None => card.size_full(),
+            })
             .overflow_hidden()
             .rounded(px(theme::RADIUS_WINDOW))
             // Same 1px outline as the Settings/Setup windows: with no
@@ -1036,7 +1187,76 @@ impl Render for Popup {
                 ("popup-appear", self.appear_gen as usize),
                 Animation::new(Duration::from_millis(250)),
                 |el, delta| el.opacity(delta),
+            );
+        let Some((pos, _)) = overlay_rect else {
+            return card.into_any_element();
+        };
+        // Overlay: a transparent full-output surface. Until the pointer's first
+        // position is known the card stays invisible; past the wait it opens
+        // bottom-center rather than never.
+        if overlay_blur_enabled() {
+            // Blur only behind the card. Before the card has a position the
+            // region is one pixel, never the empty slice (= whole surface).
+            let region = if self.overlay.as_ref().is_some_and(|o| o.pos.is_some()) {
+                let (w, h) = self.overlay_card_size();
+                gpui::Bounds::new(pos, gpui::size(px(w), px(h)))
+            } else {
+                gpui::Bounds::new(point(px(0.), px(0.)), gpui::size(px(1.), px(1.)))
+            };
+            window.set_background_blur_regions(&[region]);
+        }
+        let waiting = self.overlay.as_ref().is_some_and(|o| {
+            o.pos.is_none() && o.opened.elapsed() < OVERLAY_POINTER_WAIT
+        });
+        // The pointer never reports a position until it moves (COSMIC sends no
+        // enter on map): once the wait is over, settle on bottom-center for good
+        // instead of jumping when the pointer finally moves.
+        if let Some(overlay) = self.overlay.as_mut() {
+            if overlay.pos.is_none() {
+                if waiting {
+                    window.request_animation_frame();
+                } else {
+                    overlay.pos = Some(pos);
+                }
+            }
+        }
+
+        div()
+            .id("popup-overlay")
+            .relative()
+            .size_full()
+            .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, window, cx| {
+                this.overlay_pointer_moved(event.position, event.pressed_button, window, cx);
+            }))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
+                    this.overlay_mouse_down(event.position, window, cx);
+                }),
             )
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
+                    this.overlay_mouse_down(event.position, window, cx);
+                }),
+            )
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _: &gpui::MouseUpEvent, _, _| {
+                    if let Some(overlay) = this.overlay.as_mut() {
+                        overlay.grab = None;
+                    }
+                }),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(pos.x)
+                    .top(pos.y)
+                    .when(waiting, |slot| slot.invisible())
+                    .child(card),
+            )
+            .into_any_element()
     }
 }
 
@@ -1321,25 +1541,26 @@ fn render_section_header(
 
 /// Begin an interactive window move from the drag strip.
 ///
-/// On X11 the window is moved by us — `window_drag` explains why the WM path
-/// mutter offers cannot work for this window type. Everywhere else the
-/// compositor owns the move, and gpui already holds the pointer serial it needs.
+/// Backends that can move the window themselves do so (`platform::x11::window`
+/// explains why the WM path mutter offers cannot work for this window type).
+/// Everywhere else the compositor owns the move, and gpui already holds the
+/// pointer serial it needs.
 fn start_window_drag(window: &mut Window, _cx: &mut Context<Popup>) {
-    use crate::window_drag::{POLL_INTERVAL, Tick, WindowDrag};
+    use crate::platform::{self, Tick, DRAG_POLL_INTERVAL};
 
-    // The X window id is located server-side (pid + class + size match); gpui
-    // 0.2.2's X11 `window_handle()` is a hard `unimplemented!()` and taking that
-    // path aborts the whole app. Only safe state reads go through gpui here.
+    // The native window id is located by the backend (pid + class + size match);
+    // gpui 0.2.2's X11 `window_handle()` is a hard `unimplemented!()` and taking
+    // that path aborts the whole app. Only safe state reads go through gpui here.
     // NB: `viewport_size()` proved unreliable for this (it reported the logical
     // 360x480 on a 720x960 physical window), so the physical size is
     // reconstructed from `bounds()` x `scale_factor()` — bounds are logical on
     // the X11 backend (set_bounds divides ConfigureNotify values by scale).
     let scale = window.scale_factor();
     let bounds = window.bounds().size;
-    let attempt = WindowDrag::begin_locating(
-        crate::APP_ID,
-        (bounds.width.to_f64() as f32 * scale, bounds.height.to_f64() as f32 * scale),
-    );
+    let attempt = platform::backend().begin_drag((
+        bounds.width.to_f64() as f32 * scale,
+        bounds.height.to_f64() as f32 * scale,
+    ));
     let mut drag = match attempt {
         Ok(drag) => drag,
         Err(reason) => {
@@ -1351,19 +1572,11 @@ fn start_window_drag(window: &mut Window, _cx: &mut Context<Popup>) {
             return;
         }
     };
-    crate::drag_log::log(format!(
-        "drag armed: x_window=0x{:x} grab_offset=({},{}) start=({},{}) root=0x{:x}",
-        drag.window(),
-        drag.grab_offset().0,
-        drag.grab_offset().1,
-        drag.start_position().0,
-        drag.start_position().1,
-        drag.root(),
-    ));
+    crate::drag_log::log(drag.describe_start());
     // Own thread, not the gpui foreground executor: the tick must keep its
     // 60 Hz cadence while the main thread renders (the executor loop stretched
     // ticks to ~100 ms under load, which read as a juddering window). The
-    // drag owns its X connection, and ends on button release (or when the
+    // drag owns its server connection, and ends on button release (or when the
     // server rejects a move because the popup is gone).
     std::thread::spawn(move || {
         loop {
@@ -1373,16 +1586,11 @@ fn start_window_drag(window: &mut Window, _cx: &mut Context<Popup>) {
                 }
                 Tick::Still => {}
                 Tick::Finished(reason) => {
-                    let (ticks, moves) = drag.counters();
-                    crate::drag_log::log(format!(
-                        "drag finished: {reason}; {ticks} ticks, {moves} moves, {:?} elapsed; server says {:?}",
-                        drag.elapsed(),
-                        drag.live_position(),
-                    ));
+                    crate::drag_log::log(drag.describe_finish(&reason));
                     break;
                 }
             }
-            std::thread::sleep(POLL_INTERVAL);
+            std::thread::sleep(DRAG_POLL_INTERVAL);
         }
     });
 }
@@ -1402,7 +1610,7 @@ fn render_drag_strip(is_dark: bool, cx: &mut Context<Popup>) -> impl IntoElement
         .cursor_grab()
         .on_mouse_down(
             gpui::MouseButton::Left,
-            cx.listener(|_, event: &gpui::MouseDownEvent, window, cx| {
+            cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
                 // Close button owns the top-right corner (~28×44px at right-16
                 // top-8, plus margin): never start a move there, or the click
                 // is swallowed by the compositor grab.
@@ -1413,7 +1621,17 @@ fn render_drag_strip(is_dark: bool, cx: &mut Context<Popup>) -> impl IntoElement
                     "strip mousedown at ({x:.1},{y:.1}) win_w={win_w:.1} close_corner={}",
                     x >= win_w - 48.0 && y <= 60.0
                 ));
-                if !(x >= win_w - 48.0 && y <= 60.0) {
+                if this.overlay.is_some() {
+                    // The card lives inside an overlay surface: it moves
+                    // client-side, so the strip is relative to the card.
+                    if let Some((pos, size)) = this.overlay_card_rect(window) {
+                        let rel_x = x - f32::from(pos.x);
+                        let rel_y = y - f32::from(pos.y);
+                        if !(rel_x >= size.0 - 48.0 && rel_y <= 60.0) {
+                            this.overlay_begin_drag(event.position, window);
+                        }
+                    }
+                } else if !(x >= win_w - 48.0 && y <= 60.0) {
                     start_window_drag(window, cx);
                 }
             }),

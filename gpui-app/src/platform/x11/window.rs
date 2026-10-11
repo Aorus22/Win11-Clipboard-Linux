@@ -17,15 +17,12 @@ use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
-    AtomEnum, ChangeWindowAttributesAux, ConfigureWindowAux, ConnectionExt, InputFocus,
-    KeyButMask, MapState, PropMode, StackMode,
+    AtomEnum, ConfigureWindowAux, ConnectionExt, KeyButMask, MapState, PropMode,
 };
-use x11rb::CURRENT_TIME;
 use x11rb::wrapper::ConnectionExt as _;
 use x11rb::rust_connection::RustConnection;
 
-/// How often the drag loop repositions the window (≈60 Hz).
-pub const POLL_INTERVAL: Duration = Duration::from_millis(16);
+use crate::platform::{PopupDrag, Tick};
 
 /// Ceiling for one drag. A released button is detected from the pointer state,
 /// so this only guards against the loop running on after a lost release.
@@ -36,16 +33,6 @@ const SIZE_TOLERANCE: i32 = 32;
 
 /// Smallest height that can still be the popup (skips gpui's 1x1 helper).
 const MIN_POPUP_HEIGHT: i32 = 200;
-
-/// Result of one drag step.
-pub enum Tick {
-    /// Window was repositioned to this root position (physical px).
-    Moved(i32, i32),
-    /// Pointer has not moved; nothing to do.
-    Still,
-    /// Drag over, with the reason (for the trace).
-    Finished(String),
-}
 
 /// A client-side window move in progress.
 pub struct WindowDrag {
@@ -198,6 +185,33 @@ impl WindowDrag {
     }
 }
 
+impl PopupDrag for WindowDrag {
+    fn describe_start(&self) -> String {
+        format!(
+            "drag armed: x_window=0x{:x} grab_offset=({},{}) start=({},{}) root=0x{:x}",
+            self.window(),
+            self.grab_offset().0,
+            self.grab_offset().1,
+            self.start_position().0,
+            self.start_position().1,
+            self.root(),
+        )
+    }
+
+    fn tick(&mut self) -> Tick {
+        WindowDrag::tick(self)
+    }
+
+    fn describe_finish(&self, reason: &str) -> String {
+        let (ticks, moves) = self.counters();
+        format!(
+            "drag finished: {reason}; {ticks} ticks, {moves} moves, {:?} elapsed; server says {:?}",
+            self.elapsed(),
+            self.live_position(),
+        )
+    }
+}
+
 /// Top-level candidates for this process's windows: the root's children plus
 /// *their* children.
 ///
@@ -206,7 +220,7 @@ impl WindowDrag {
 /// `WM_CLASS`/`_NET_WM_PID` — sits one level down. Scanning the root alone
 /// finds nothing there, which silently disabled every popup move/map/unmap.
 /// The child queries are pipelined, so this costs one round-trip of latency.
-fn candidate_windows(conn: &RustConnection, root: u32) -> Result<Vec<u32>, String> {
+pub(in crate::platform) fn candidate_windows(conn: &RustConnection, root: u32) -> Result<Vec<u32>, String> {
     let top = conn
         .query_tree(root)
         .map_err(|error| format!("query_tree error: {error}"))?
@@ -224,7 +238,7 @@ fn candidate_windows(conn: &RustConnection, root: u32) -> Result<Vec<u32>, Strin
 }
 
 /// Connect to the X server and resolve the default root window.
-fn connect_root() -> Result<(RustConnection, u32), String> {
+pub(in crate::platform) fn connect_root() -> Result<(RustConnection, u32), String> {
     let (conn, screen) =
         x11rb::connect(None).map_err(|error| format!("x11rb::connect failed: {error}"))?;
     let root = conn
@@ -300,25 +314,13 @@ pub fn set_popup_mapped(
         false,
     )?;
     if mapped {
-        let unmanaged = unmanaged_popup_enabled();
-        if unmanaged {
-            // Must be set while unmapped; takes effect on the map below.
-            if let Err(error) = set_override_redirect(&conn, window) {
-                eprintln!("[gpui-app] popup override-redirect not applied: {error}");
-            }
-        } else if let Err(error) = apply_managed_window_hints(&conn, window) {
+        if let Err(error) = apply_managed_window_hints(&conn, window) {
             eprintln!("[gpui-app] popup WM hints not applied: {error}");
         }
         conn.map_window(window)
             .map_err(|error| format!("MapWindow error: {error}"))?
             .check()
             .map_err(|error| format!("MapWindow rejected: {error}"))?;
-        if unmanaged {
-            // No WM manages the window, so nothing raises or focuses it.
-            if let Err(error) = raise_and_focus(&conn, window) {
-                eprintln!("[gpui-app] popup raise/focus failed: {error}");
-            }
-        }
     } else {
         conn.unmap_window(window)
             .map_err(|error| format!("UnmapWindow error: {error}"))?
@@ -330,98 +332,8 @@ pub fn set_popup_mapped(
     Ok(())
 }
 
-/// COSMIC: show the popup as an override-redirect window.
-///
-/// cosmic-comp paints a title bar on managed X11 windows and lists every one
-/// in its dock, ignoring the window-type / skip-taskbar hints mutter honours.
-/// An override-redirect window is never managed — like a menu or tooltip it
-/// gets no decorations and no dock entry. The catch is keyboard focus: the WM
-/// no longer hands it out, so [`raise_and_focus`] asks for it explicitly
-/// (verified working on cosmic-comp's XWayland). `WIN11_CLIPBOARD_COSMIC_UNMANAGED=0`
-/// opts out, falling back to the managed window with [`apply_managed_window_hints`].
-fn unmanaged_popup_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        let enabled = crate::cosmic_shortcut::is_cosmic()
-            && std::env::var("WIN11_CLIPBOARD_COSMIC_UNMANAGED").as_deref() != Ok("0");
-        if enabled {
-            eprintln!("[gpui-app] popup shown as override-redirect (COSMIC unmanaged mode)");
-        }
-        enabled
-    })
-}
-
-/// Take the permanent 1×1 holder window out of the window manager's hands.
-///
-/// The holder is opened with `show: false`, but gpui's X11 backend maps it
-/// anyway; mutter keeps a NOTIFICATION-type window out of the dock, cosmic-comp
-/// lists it as a running app. Same remedy as the popup: unmap, flag
-/// override-redirect, map again (1×1 and transparent, so nothing is visible).
-/// No-op unless COSMIC unmanaged mode is on. Fails while the holder window does
-/// not exist yet, so callers retry.
-pub fn unmanage_holder(app_id: &str) -> Result<(), String> {
-    if !unmanaged_popup_enabled() {
-        return Ok(());
-    }
-    let (conn, root) = connect_root()?;
-    let net_wm_pid = atom(&conn, b"_NET_WM_PID")?;
-    let holder = candidate_windows(&conn, root)?
-        .into_iter()
-        .find(|&window| {
-            let ours = window_class(&conn, window)
-                .map(|class| {
-                    class
-                        .windows(app_id.len())
-                        .any(|chunk| chunk == app_id.as_bytes())
-                })
-                .unwrap_or(false)
-                && window_pid(&conn, net_wm_pid, window) == Some(std::process::id());
-            ours && conn
-                .get_geometry(window)
-                .ok()
-                .and_then(|cookie| cookie.reply().ok())
-                .map(|geo| geo.width <= 2 && geo.height <= 2)
-                .unwrap_or(false)
-        })
-        .ok_or_else(|| "holder window not found".to_string())?;
-    conn.unmap_window(holder)
-        .map_err(|error| format!("UnmapWindow error: {error}"))?
-        .check()
-        .map_err(|error| format!("UnmapWindow rejected: {error}"))?;
-    set_override_redirect(&conn, holder)?;
-    conn.map_window(holder)
-        .map_err(|error| format!("MapWindow error: {error}"))?
-        .check()
-        .map_err(|error| format!("MapWindow rejected: {error}"))?;
-    conn.flush()
-        .map_err(|error| format!("flush error: {error}"))?;
-    eprintln!("[gpui-app] holder window unmanaged (0x{holder:x})");
-    Ok(())
-}
-
-fn set_override_redirect(conn: &RustConnection, window: u32) -> Result<(), String> {
-    conn.change_window_attributes(window, &ChangeWindowAttributesAux::new().override_redirect(1))
-        .map_err(|error| format!("ChangeWindowAttributes error: {error}"))?
-        .check()
-        .map_err(|error| format!("ChangeWindowAttributes rejected: {error}"))
-}
-
-fn raise_and_focus(conn: &RustConnection, window: u32) -> Result<(), String> {
-    conn.configure_window(
-        window,
-        &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
-    )
-    .map_err(|error| format!("raise error: {error}"))?
-    .check()
-    .map_err(|error| format!("raise rejected: {error}"))?;
-    conn.set_input_focus(InputFocus::PARENT, window, CURRENT_TIME)
-        .map_err(|error| format!("SetInputFocus error: {error}"))?
-        .check()
-        .map_err(|error| format!("SetInputFocus rejected: {error}"))
-}
-
 /// Intern one atom, or explain why not.
-fn atom(conn: &RustConnection, name: &[u8]) -> Result<u32, String> {
+pub(in crate::platform) fn atom(conn: &RustConnection, name: &[u8]) -> Result<u32, String> {
     conn.intern_atom(false, name)
         .map_err(|error| format!("intern_atom error: {error}"))?
         .reply()
@@ -626,7 +538,7 @@ pub fn popup_window_id(app_id: &str) -> Option<u32> {
 /// `mapped_only` additionally requires `MapState::VIEWABLE` (used only by the
 /// drag path — a drag on an invisible window is nonsense; move/map/unmap must
 /// also work on unmapped windows).
-fn locate_popup_window(
+pub(in crate::platform) fn locate_popup_window(
     conn: &RustConnection,
     root: u32,
     app_id: &str,
@@ -714,7 +626,7 @@ fn locate_popup_window(
 }
 
 /// WM_CLASS (instance\0class, both STRING) of a window, raw bytes.
-fn window_class(conn: &RustConnection, window: u32) -> Option<Vec<u8>> {
+pub(in crate::platform) fn window_class(conn: &RustConnection, window: u32) -> Option<Vec<u8>> {
     let reply = conn
         .get_property(false, window, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 256)
         .ok()?
@@ -727,7 +639,7 @@ fn window_class(conn: &RustConnection, window: u32) -> Option<Vec<u8>> {
 }
 
 /// `_NET_WM_PID` of a window, when present.
-fn window_pid(conn: &RustConnection, net_wm_pid: u32, window: u32) -> Option<u32> {
+pub(in crate::platform) fn window_pid(conn: &RustConnection, net_wm_pid: u32, window: u32) -> Option<u32> {
     let reply = conn
         .get_property(false, window, net_wm_pid, AtomEnum::CARDINAL, 0, 1)
         .ok()?

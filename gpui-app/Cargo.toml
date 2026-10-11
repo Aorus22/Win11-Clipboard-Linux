@@ -14,7 +14,10 @@ path = "src/main.rs"
 
 [dependencies]
 # Pinned: GPUI is pre-1.0 with frequent breaking changes (see .planning/research/SUMMARY.md).
-gpui = "=0.2.2"
+# `gpui-pre` is the Zed gpui snapshot published to crates.io; its lib is still named `gpui`.
+# It is patched below with ~/Project/gpui-wayland-patches (layer-shell + blur) via [patch.crates-io].
+gpui = { package = "gpui-pre", version = "=0.3.8" }
+gpui-platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["wayland", "x11"] }
 anyhow = "1"
 # Reused core backend — shared with Tauri app, completely decoupled from Tauri UI
 win11-clipboard-history-lib = { package = "win11-clipboard-core", path = "../core" }
@@ -37,6 +40,15 @@ futures-lite = "2"
 tokio = { version = "1", features = ["full"] }
 # GTK init for the AppIndicator tray backend (same stack the Tauri build uses).
 gtk = "0.18"
+
+# TODO(release): the local `path` entries below only work on the author's machine. Once the patch
+# repo is pushed, replace them with
+#   gpui-pre       = { git = "https://github.com/Aorus22/gpui-wayland-patches", rev = "<rev>" }
+#   gpui-pre-linux = { git = "https://github.com/Aorus22/gpui-wayland-patches", rev = "<rev>" }
+# (pinned rev) so CI and other contributors can build.
+[patch.crates-io]
+gpui-pre = { path = "/home/aorus/Project/gpui-wayland-patches/gpui-pre" }
+gpui-pre-linux = { path = "/home/aorus/Project/gpui-wayland-patches/gpui-pre-linux" }
 
 [profile.release]
 panic = "abort"

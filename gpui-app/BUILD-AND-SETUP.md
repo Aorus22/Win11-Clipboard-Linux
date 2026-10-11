@@ -5,7 +5,14 @@ installing it, and completing first-run setup. For architecture/packaging
 reference details (coexistence map, AppDir layout, Wayland notes), see
 [PACKAGING.md](PACKAGING.md).
 
-Tested on Fedora 44 · Rust 1.98 · gpui 0.2.2 (pinned via `gpui-app/Cargo.lock`).
+Tested on Fedora 44 · Rust 1.98 · gpui-pre 0.3.8 + the Wayland patches from
+`gpui-wayland-patches` (layer-shell, blur), pinned via `gpui-app/Cargo.lock`.
+
+> **Build prerequisite:** `gpui-app/Cargo.toml` currently patches `gpui-pre` /
+> `gpui-pre-linux` with a **local path** to a `gpui-wayland-patches` checkout
+> (`~/Project/gpui-wayland-patches`). Before CI / the Docker AppImage build can
+> work, push that repo and switch the `[patch.crates-io]` lines to
+> `git = "https://github.com/Aorus22/gpui-wayland-patches", rev = "<rev>"`.
 
 ---
 
@@ -144,12 +151,13 @@ The 5-step setup wizard opens automatically:
    (visible under Settings → Keyboard → Custom Shortcuts); a `.bak` copy of
    the original file is kept next to it. "System" theme follows COSMIC's
    `com.system76.CosmicTheme.Mode` config.
-   **COSMIC popup chrome:** cosmic-comp ignores the window-type/skip-taskbar
-   hints that keep the popup out of the GNOME dock, so on COSMIC the popup and
-   the 1×1 holder window are override-redirect (unmanaged) X11 windows: no
-   title bar, no dock entry, keyboard focus requested explicitly. Set
-   `WIN11_CLIPBOARD_COSMIC_UNMANAGED=0` to fall back to a managed window
-   (`_MOTIF_WM_HINTS` without decorations, but it stays in the dock).
+   **COSMIC popup:** native Wayland `wlr-layer-shell` overlay (no XWayland, no
+   dock entry, no `input` group needed for outside clicks).
+   **GNOME popup:** the wizard also installs the helper extension
+   (`clipboard-history-gpui@win11-clipboard.dev`, embedded in the binary; same as
+   `win11-clipboard-history-gpui --install-gnome-extension`) and adds it to
+   `enabled-extensions`. GNOME Shell loads new extensions at login on Wayland, so
+   **log out and back in once**; until then the legacy XWayland backend is used.
    Verify:
 
    ```bash
@@ -193,7 +201,7 @@ Super+V again (or click elsewhere) hides it.
 | Link error `-lxdo` or `-lxkbcommon-x11` | install `libxdo-devel` / `libxkbcommon-x11-devel` (section 1) |
 | `cargo check` passes, release *link* fails | same as above — only the link step pulls those libs |
 | Tray icon missing | AppIndicator extension not enabled (section 4); also check `gdbus call --session --dest org.kde.StatusNotifierWatcher --object-path /StatusNotifierWatcher --method org.freedesktop.DBus.Properties.Get org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems` |
-| App appears in the dock | you forced Wayland (`WIN11_CLIPBOARD_ALLOW_WAYLAND=1`) or no XWayland is available — the dock-hidden behaviour relies on the X11 backend |
+| App appears in the dock | GNOME: the helper extension is not running yet (log out/in after installing it) and XWayland is unavailable or you forced Wayland (`WIN11_CLIPBOARD_ALLOW_WAYLAND=1`); check the startup line `[gpui-app] platform backend: …` |
 | Popup won't close on outside click / drag misbehaves | inspect `~/.config/win11-clipboard-history-gpui/drag-debug.log` (disable with `WIN11_CLIPBOARD_DRAG_LOG=0`) |
 | Settings window: transparency disabled | expected on NVIDIA + AppImage (WebKit DMABUF workaround); the Settings window says so |
 | Reset everything (fresh wizard) | `rm -rf ~/.config/win11-clipboard-history-gpui/` |
@@ -281,7 +289,9 @@ compositor shadow or frame exists around it — it only shares the 1 px outline.
 | Var | Effect |
 |---|---|
 | `WIN11_CLIPBOARD_DRAG_LOG=0` | disable the drag trace log |
-| `WIN11_CLIPBOARD_ALLOW_WAYLAND=1` | keep the native Wayland backend (popup shows in dock while open) |
+| `WIN11_CLIPBOARD_BACKEND=x11\|gnome\|cosmic` | force a window backend (see PACKAGING.md) |
+| `WIN11_CLIPBOARD_ALLOW_WAYLAND=1` | `x11` backend only: keep native Wayland (popup shows in dock while open) |
+| `WIN11_CLIPBOARD_BLUR=1` | `cosmic` backend: compositor blur behind the popup card (opt-in) |
 
 ### Useful CLI flags
 
@@ -294,7 +304,8 @@ compositor shadow or frame exists around it — it only shares the 1 px outline.
 | `--setup` | force the setup wizard even if not first run |
 | `--quit` | tell the running instance to quit, then exit |
 | `--version` / `-v` | print version |
-| `--register-shortcuts` / `--unregister-shortcuts` | manage GNOME keybindings headlessly |
+| `--register-shortcuts` / `--unregister-shortcuts` | manage GNOME/COSMIC keybindings headlessly |
+| `--install-gnome-extension` | install + enable the GNOME Shell helper extension |
 
 ### Files created at runtime
 

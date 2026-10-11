@@ -236,7 +236,7 @@ impl SearchState {
                 // Focus THIS field (not always the clipboard one) and drop
                 // any selection — a click places a fresh caret.
                 let s = this.search_mut(which);
-                s.focus.focus(window);
+                s.focus.focus(window, cx);
                 s.sel_anchor = None;
                 cx.notify();
             }))
@@ -415,6 +415,7 @@ mod tests {
                 key_char: printable.then(|| key.to_string()),
             },
             is_held: false,
+            prefer_character_input: false,
         }
     }
 

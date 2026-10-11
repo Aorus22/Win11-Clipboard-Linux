@@ -32,7 +32,7 @@ pub const RADIUS_WINDOW: f32 = 12.0;
 /// CSD does: keep [`WINDOW_SHADOW_MARGIN`] transparent pixels all around, paint
 /// the shadow into them ourselves ([`window_shadow`]), and advertise the same
 /// margin as `_GTK_FRAME_EXTENTS` so mutter treats the inset frame as the window
-/// and stops drawing its square shadow (see `window_drag::set_frame_extents`).
+/// and stops drawing its square shadow (see `PlatformBackend::set_frame_extents`).
 ///
 /// The window is therefore `2 * WINDOW_SHADOW_MARGIN` larger than the card the
 /// user sees, which is why `centered_options` adds it back.
@@ -49,6 +49,7 @@ pub fn window_shadow() -> Vec<gpui::BoxShadow> {
         offset: gpui::point(gpui::px(0.), gpui::px(4.)),
         blur_radius: gpui::px(12.),
         spread_radius: gpui::px(0.),
+        inset: false,
     }]
 }
 

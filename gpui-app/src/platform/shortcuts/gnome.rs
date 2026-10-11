@@ -44,7 +44,7 @@ pub fn is_gnome() -> bool {
 }
 
 /// Parse a gsettings `@as [...]` list of quoted paths into Vec<String>.
-fn parse_path_list(raw: &str) -> Vec<String> {
+pub(in crate::platform) fn parse_path_list(raw: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
     let mut in_quotes = false;

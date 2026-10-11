@@ -97,29 +97,40 @@ backend (`libayatana-appindicator`) *is* bundled.
 with an absolute `Exec` (so the `Settings` action works), and installs the
 icons. Autostart and the Super+V binding stay with the wizard.
 
-## Dock / taskbar behaviour on Wayland (X11 is pinned on purpose)
+## Platform backends (x11, gnome, cosmic)
 
-On a Wayland session the GPUI build runs its windows through **XWayland**.
-`main()` removes `WAYLAND_DISPLAY` (and aligns `XDG_SESSION_TYPE`) before the
-platform initializes, because:
+One binary carries three window backends (`src/platform/`); `platform::init()`
+picks one at startup, before gpui initializes:
 
-- gpui's Wayland backend has no way to keep the clipboard popup out of the
-dock — xdg-shell has no window-type/notification hint, so `WindowKind::PopUp`
-is an ordinary toplevel and GNOME's Dash-to-Dock lists it while it is open
-(the Tauri build hits the same wall: tauri-apps/tauri#9829).
-- gpui's **X11** backend tags `WindowKind::PopUp` as
-`_NET_WM_WINDOW_TYPE_NOTIFICATION`, which docks and taskbars hide, and it
-restores cursor-follow positioning for the popup.
+| Backend | Chosen when | How the popup works |
+|---|---|---|
+| `cosmic` | `XDG_CURRENT_DESKTOP` has `cosmic` on a Wayland session | native Wayland, a transparent full-output `wlr-layer-shell` overlay created per show; the card is drawn at the pointer, dragged and dismissed client-side. No dock entry, no title bar, no XWayland, no `input` group needed |
+| `gnome` | GNOME on a Wayland session **and** the helper GNOME Shell extension is running | native Wayland window; the extension (embedded in the binary, installed by the wizard or `--install-gnome-extension`) places, shows, hides it, reports the pointer and clicks outside, and keeps the app out of the dock while only the popup is open |
+| `x11` | everything else (KDE, Sway, X11 sessions, GNOME without the extension) | legacy: X11 client, run through **XWayland** on Wayland sessions (`WAYLAND_DISPLAY` is dropped on purpose: gpui's X11 backend tags the popup `_NET_WM_WINDOW_TYPE_NOTIFICATION`, which docks hide, and cursor-follow works) |
 
-Escape hatches:
+Notes:
+
+- The GNOME extension is only loaded by GNOME Shell at **login** on Wayland
+(Shell cannot be restarted there), so right after the first install the app
+keeps using `x11`; the wizard says to log out and in once.
+- Supported dock filtering was verified against GNOME Shell 50's stock dash;
+Dash to Dock / Ubuntu Dock use the same `Shell.AppSystem.get_running()` list
+but have not been tested. Where a dock still shows the app, it behaves as a
+normal window entry only while the popup is open.
+- The shortcut registration (`Super+V` → `--toggle`) follows the *desktop*, not
+the backend (`src/platform/shortcuts/`).
+
+Environment variables:
 
 | Env var | Effect |
 |---------|--------|
-| `WIN11_CLIPBOARD_ALLOW_WAYLAND=1` | keep the native Wayland backend (popup will appear in the dock while open) |
+| `WIN11_CLIPBOARD_BACKEND=x11\|gnome\|cosmic` | force a backend (debug/CI) |
+| `WIN11_CLIPBOARD_ALLOW_WAYLAND=1` | with the `x11` backend: keep native Wayland instead of pinning XWayland |
+| `WIN11_CLIPBOARD_BLUR=1` | `cosmic`: ask the compositor (`ext-background-effect-v1`) to blur behind the card; opt-in, not yet verified on a real COSMIC |
 
-If no `DISPLAY` (XWayland) is available the app stays on Wayland automatically.
-Settings and the wizard are ordinary decorated windows and always show up in
-the dock — only the clipboard popup is hidden.
+If no `DISPLAY` (XWayland) is available the `x11` backend stays on Wayland
+automatically. Settings and the wizard are ordinary decorated windows and always
+show up in the dock — only the clipboard popup is hidden.
 
 ## First run checklist
 

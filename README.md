@@ -81,6 +81,20 @@ Most Linux clipboard managers are purely functional but lack visual appeal. This
 
 ---
 
+## Desktop support
+
+One binary picks its window backend at startup (`platform backend: …` in the log;
+override with `WIN11_CLIPBOARD_BACKEND=x11|gnome|cosmic`).
+
+| Desktop | Backend | Popup |
+| --- | --- | --- |
+| COSMIC (Wayland) | `cosmic` | native `wlr-layer-shell` overlay, at the cursor, no dock entry |
+| GNOME (Wayland) + helper extension | `gnome` | native Wayland window placed by the extension (installed by the setup wizard; log out/in once) |
+| GNOME without the extension, KDE, Sway, … | `x11` | XWayland, hidden from docks via the notification window type |
+| Any X11 session | `x11` | native X11, follows the cursor |
+
+Details: [gpui-app/PACKAGING.md](gpui-app/PACKAGING.md#platform-backends-x11-gnome-cosmic).
+
 ## Shortcuts and Usage
 
 | Key | Action |

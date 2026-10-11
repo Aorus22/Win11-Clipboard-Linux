@@ -94,7 +94,7 @@ struct Metrics {
 impl Metrics {
     fn of(handle: &ScrollHandle) -> Self {
         let viewport_h = f32::from(handle.bounds().size.height);
-        let max = f32::from(handle.max_offset().height).max(0.0);
+        let max = f32::from(handle.max_offset().y).max(0.0);
         // The thumb is the viewport's share of the whole content, so the bar
         // reads as a map of the list.
         let thumb_h = if viewport_h > 0.0 && max > 0.0 {

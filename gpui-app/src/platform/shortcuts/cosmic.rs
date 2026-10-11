@@ -4,7 +4,7 @@
 //! `~/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom`
 //! (`{ (modifiers: [Super], key: "v", description: Some("..")): Spawn("cmd"), }`)
 //! and cosmic-settings-daemon reloads it when the file changes. Like
-//! `gnome_shortcut`, entries use `<exe> --toggle` and are recognised by their
+//! `gnome`, entries use `<exe> --toggle` and are recognised by their
 //! command, so Tauri-owned bindings are never touched (coexistence-safe).
 
 use std::path::{Path, PathBuf};
@@ -173,7 +173,7 @@ fn unregister_at(path: &Path) -> Result<String, String> {
 /// Register both shortcuts. Idempotent: replaces our own entries, never
 /// touches entries owned by anyone else (including the Tauri build).
 pub fn register() -> Result<String, String> {
-    register_at(&config_path()?, &crate::gnome_shortcut::current_exe_toggle())
+    register_at(&config_path()?, &super::gnome::current_exe_toggle())
 }
 
 /// Remove only our own entries.

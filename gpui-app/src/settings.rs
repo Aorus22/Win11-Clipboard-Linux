@@ -149,7 +149,7 @@ pub fn settings_mtime() -> Option<std::time::SystemTime> {
 pub fn system_prefers_dark() -> bool {
     // COSMIC does not drive the GNOME schema (it may exist but stay "default"),
     // so its own config is the source of truth there.
-    if crate::cosmic_shortcut::is_cosmic() {
+    if crate::platform::shortcuts::current_desktop() == crate::platform::shortcuts::Desktop::Cosmic {
         if let Ok(is_dark) = win11_clipboard_history_lib::theme_manager::read_cosmic_theme_file() {
             return is_dark;
         }
