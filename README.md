@@ -93,6 +93,8 @@ override with `WIN11_CLIPBOARD_BACKEND=x11|gnome|cosmic`).
 | GNOME without the extension, KDE, Sway, … | `x11` | XWayland, hidden from docks via the notification window type |
 | Any X11 session | `x11` | native X11, follows the cursor |
 
+The COSMIC / GNOME / X11 split applies to both the GPUI build and the [iced / libcosmic build](iced-app/README.md).
+
 Details: [gpui-app/PACKAGING.md](gpui-app/PACKAGING.md#platform-backends-x11-gnome-cosmic).
 
 ## Shortcuts and Usage

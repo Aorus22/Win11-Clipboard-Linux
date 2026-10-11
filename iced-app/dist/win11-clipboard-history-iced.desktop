@@ -1,0 +1,17 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Clipboard History (iced)
+GenericName=Clipboard Manager
+Comment=Windows 11-style clipboard history manager for Linux (iced / libcosmic build)
+Exec=__BINDIR__/win11-clipboard-history-iced
+Icon=win11-clipboard-history-iced
+StartupWMClass=win11-clipboard-history-iced
+Terminal=false
+Categories=Utility;
+StartupNotify=false
+Actions=Settings;
+
+[Desktop Action Settings]
+Name=Open Clipboard Settings
+Exec=__BINDIR__/win11-clipboard-history-iced --settings-open

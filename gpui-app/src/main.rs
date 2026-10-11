@@ -19,22 +19,14 @@ use gpui::{
 };
 
 mod app_state;
-mod backend;
-mod drag_log;
-mod geometry;
+mod layer;
 mod gtk_theme;
-mod history;
-mod instance;
-mod pickers;
-mod platform;
-mod settings;
-#[cfg(test)]
-mod test_util;
 mod theme;
 mod theme_watch;
 mod tray;
 mod ui;
 
+use app_shared::{backend, drag_log, geometry, history, instance, pickers, platform, settings};
 use app_state::Shared;
 use backend::BackendService;
 use geometry::{MonitorRect, bottom_center, clamp_to_monitor};
@@ -278,7 +270,7 @@ fn popup_options(origin: (f32, f32), w: f32, h: f32) -> WindowOptions {
             gpui::WindowBackgroundAppearance::Transparent
         },
         show: true,
-        kind: platform::backend().window_kind(),
+        kind: layer::popup_window_kind(),
         is_movable: true,
         focus: true,
         app_id: Some(APP_ID.into()),
@@ -577,6 +569,7 @@ fn has_arg(args: &[String], flag: &str) -> bool {
 fn main() {
     // Must run before the platform is initialized (and before anything caches
     // the session type) so the whole process agrees on the chosen backend.
+    app_shared::identity::init(app_shared::identity::AppIdentity::GPUI);
     platform::init();
 
     // The settings window reads the rendering environment (NVIDIA/AppImage
@@ -688,7 +681,7 @@ fn main() {
     // Physical outside-click dismissal (evdev). Independent of focus, so it
     // keeps working on focus-follows-mouse desktops where focus-loss alone
     // cannot tell a hover from a click.
-    platform::backend().spawn_outside_click_watcher(shared.clone());
+    platform::backend().spawn_outside_click_watcher(std::sync::Arc::new(app_state::SharedHooks(shared.clone())));
 
     // GTK is up (or not) at this point; the tray backend needs it and nothing else
     // runs a gtk main loop, so the poll loop below pumps its idle callbacks.
@@ -887,6 +880,16 @@ fn main() {
                                         focus_manager::note_popup_window(
                                             platform::backend().popup_window_id(),
                                         );
+                                    }
+                                    if platform::backend().popup_surface()
+                                        == platform::PopupSurface::Overlay
+                                    {
+                                        // Once the overlay is mapped, have the compositor
+                                        // report the pointer (it sends nothing while idle).
+                                        std::thread::spawn(|| {
+                                            std::thread::sleep(Duration::from_millis(150));
+                                            platform::backend().prime_pointer();
+                                        });
                                     }
                                     if let Some(h) = popup.as_ref() {
                                         // Show: fresh cursor-follow position,

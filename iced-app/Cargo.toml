@@ -1,0 +1,44 @@
+[package]
+name = "win11-clipboard-history-iced"
+version = "0.1.0"
+description = "Windows 11-style Clipboard History for Linux — iced/libcosmic frontend"
+license = "MIT"
+edition = "2021"
+
+[[bin]]
+name = "win11-clipboard-history-iced"
+path = "src/main.rs"
+
+[dependencies]
+# libcosmic is pre-1.0 and its API moves; keep the git rev pinned (same as iced-wayland-widget).
+libcosmic = { git = "https://github.com/pop-os/libcosmic", rev = "60ad2cc4c33d7500aba557cd9150e6938d72d5a1", default-features = false, features = [
+    "winit",
+    "tokio",
+    "wayland",
+    "multi-window",
+    "single-instance",
+    "wgpu",
+    "dbus-config",
+] }
+tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+env_logger = "=0.11.11"
+log = "=0.4.29"
+serde_json = "=1.0.151"
+serde = { version = "=1.0.229", features = ["derive"] }
+chrono = { version = "=0.4.45", features = ["clock"] }
+ksni = { version = "=0.3.6", features = ["blocking"] }
+ttf-parser = "=0.25.1"
+base64 = "=0.22.1"
+image = { version = "=0.25.10", default-features = false, features = ["png"] }
+# Toolkit-independent code shared with the GPUI frontend.
+app-shared = { path = "../app-shared" }
+win11-clipboard-history-lib = { package = "win11-clipboard-core", path = "../core" }
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+
+[dev-dependencies]
+iced_test = { git = "https://github.com/pop-os/libcosmic", rev = "60ad2cc4c33d7500aba557cd9150e6938d72d5a1" }

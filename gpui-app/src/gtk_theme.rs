@@ -606,7 +606,7 @@ pub fn palette_from_colors(c: &GtkColors) -> theme::GtkPalette {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::serial_lock;
+    use app_shared::test_util::serial_lock;
 
     fn color(hex: u32) -> Rgba {
         gpui::rgb(hex)

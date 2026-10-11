@@ -85,7 +85,7 @@ downloaded to `$XDG_CACHE_HOME/win11-clipboard-appimage` and run with
 | Path | Source |
 |------|--------|
 | `usr/bin/win11-clipboard-history-gpui` | release build |
-| `usr/share/win11-clipboard-history-gpui/assets/` | `gpui-app/assets/` (`emojis.json`, `icons/`) |
+| `usr/share/win11-clipboard-history-gpui/assets/` | `gpui-app/assets/` (`emojis.json` from `app-shared/assets/`, `icons/`) |
 | `usr/share/applications/win11-clipboard-history-gpui.desktop` | `gpui-app/dist/` (`__BINDIR__` dropped → AppRun) |
 | `usr/share/icons/hicolor/{128x128,256x256,scalable}/apps/` | reused Tauri icons |
 

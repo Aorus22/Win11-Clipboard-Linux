@@ -37,7 +37,8 @@ RESET := \033[0m
 .PHONY: all help deps deps-ubuntu deps-debian deps-fedora deps-arch \
         rust node check-deps dev build install uninstall clean clean-first-run run \
         lint format test release gpui-build gpui-install gpui-uninstall \
-        gpui-appimage gpui-appimage-install
+        gpui-appimage gpui-appimage-install \
+        iced-build iced-install iced-uninstall iced-appimage iced-appimage-install
 
 all: build
 
@@ -420,3 +421,48 @@ gpui-uninstall:
 	rm -f $(DESTDIR)$(DATADIR)/icons/hicolor/256x256/apps/$(GPUI_BIN).png
 	rm -f $(DESTDIR)$(DATADIR)/applications/$(GPUI_DESKTOP)
 	@echo -e "$(GREEN)✓ Uninstalled (user data in ~/.config/$(GPUI_BIN) kept)$(RESET)"
+
+# --- iced / libcosmic frontend (iced-app/) ---------------------------------
+
+ICED_BIN := win11-clipboard-history-iced
+ICED_DESKTOP := $(ICED_BIN).desktop
+
+iced-build:
+	@echo -e "$(CYAN)Building iced frontend (release)...$(RESET)"
+	@command -v cargo >/dev/null || (echo "cargo not found - install Rust: https://rustup.rs"; exit 1)
+	cargo build --release --manifest-path iced-app/Cargo.toml
+	@echo -e "$(GREEN)✓ Built iced-app/target/release/$(ICED_BIN)$(RESET)"
+
+# Install next to the GPUI/Tauri builds (own binary, desktop entry and icons).
+iced-install: iced-build
+	@echo -e "$(CYAN)Installing $(ICED_BIN) to $(DESTDIR)$(PREFIX)...$(RESET)"
+	install -Dm755 iced-app/target/release/$(ICED_BIN) $(DESTDIR)$(BINDIR)/$(ICED_BIN)
+	@sed 's|__BINDIR__|$(BINDIR)|' iced-app/dist/$(ICED_DESKTOP) > /tmp/$(ICED_DESKTOP)
+	install -Dm644 /tmp/$(ICED_DESKTOP) $(DESTDIR)$(DATADIR)/applications/$(ICED_DESKTOP)
+	install -Dm644 src-tauri/icons/128x128.png $(DESTDIR)$(DATADIR)/icons/hicolor/128x128/apps/$(ICED_BIN).png
+	install -Dm644 src-tauri/icons/icon.png $(DESTDIR)$(DATADIR)/icons/hicolor/256x256/apps/$(ICED_BIN).png
+	@mkdir -p $(DESTDIR)/etc/udev/rules.d
+	install -Dm644 src-tauri/bundle/linux/99-win11-clipboard-input.rules $(DESTDIR)/etc/udev/rules.d/
+	@update-desktop-database $(DESTDIR)$(DATADIR)/applications 2>/dev/null || true
+	@gtk-update-icon-cache -f -t $(DESTDIR)$(DATADIR)/icons/hicolor 2>/dev/null || true
+	@echo -e "$(GREEN)✓ Installed! Run '$(ICED_BIN)' once to complete the first-run wizard.$(RESET)"
+
+iced-appimage:
+	@echo -e "$(CYAN)Building iced AppImage...$(RESET)"
+	@./scripts/build-iced-appimage.sh
+	@echo -e "$(GREEN)✓ AppImage written to iced-app/dist/$(RESET)"
+
+# Build the AppImage and register it for the current user only (~/Applications,
+# ~/.local/share/applications). Never touches /usr and never adds autostart.
+iced-appimage-install:
+	@echo -e "$(CYAN)Building + installing iced AppImage for $(shell whoami)...$(RESET)"
+	@./scripts/build-iced-appimage.sh --install
+
+iced-uninstall:
+	@echo -e "$(CYAN)Uninstalling $(ICED_BIN)...$(RESET)"
+	@pkill -x "$(ICED_BIN)" 2>/dev/null || true
+	rm -f $(DESTDIR)$(BINDIR)/$(ICED_BIN)
+	rm -f $(DESTDIR)$(DATADIR)/icons/hicolor/128x128/apps/$(ICED_BIN).png
+	rm -f $(DESTDIR)$(DATADIR)/icons/hicolor/256x256/apps/$(ICED_BIN).png
+	rm -f $(DESTDIR)$(DATADIR)/applications/$(ICED_DESKTOP)
+	@echo -e "$(GREEN)✓ Uninstalled (user data in ~/.config/$(ICED_BIN) kept)$(RESET)"

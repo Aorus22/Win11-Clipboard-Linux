@@ -1,0 +1,753 @@
+//! Client-side window move for the X11 backend.
+//!
+//! `gpui::Window::start_window_move()` asks the window manager to run an
+//! interactive move (`_NET_WM_MOVERESIZE`). Mutter services that with a WM-side
+//! grab, and the clipboard popup is a `_NET_WM_WINDOW_TYPE_NOTIFICATION` window
+//! — a type it does not hand a move grab to, so dragging the header pill did
+//! nothing. Repositioning our own X window with `ConfigureWindow` needs no WM
+//! cooperation and was verified to move this exact window, which is why the X11
+//! backend drags itself and only Wayland defers to the compositor.
+//!
+//! The move is driven by polling the pointer rather than by gpui's mouse-move
+//! events: the window follows the pointer, so the pointer barely moves *within*
+//! the window and its local motion deltas are useless for positioning.
+
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+use x11rb::connection::Connection;
+use x11rb::protocol::xproto::{
+    AtomEnum, ConfigureWindowAux, ConnectionExt, KeyButMask, MapState, PropMode,
+};
+use x11rb::wrapper::ConnectionExt as _;
+use x11rb::rust_connection::RustConnection;
+
+use crate::platform::{PopupDrag, Tick};
+
+/// Ceiling for one drag. A released button is detected from the pointer state,
+/// so this only guards against the loop running on after a lost release.
+const MAX_DRAG: Duration = Duration::from_secs(30);
+
+/// Physical-pixel slack when matching the popup by size.
+const SIZE_TOLERANCE: i32 = 32;
+
+/// Smallest height that can still be the popup (skips gpui's 1x1 helper).
+const MIN_POPUP_HEIGHT: i32 = 200;
+
+/// A client-side window move in progress.
+pub struct WindowDrag {
+    conn: RustConnection,
+    root: u32,
+    window: u32,
+    /// Pointer position minus window origin (physical px), fixed for the whole
+    /// drag so the window tracks the pointer without jumping.
+    grab_offset: (i32, i32),
+    last: (i32, i32),
+    started: Instant,
+    ticks: u32,
+    moves: u32,
+}
+
+impl WindowDrag {
+    /// Start moving this process's popup window, located on the X server.
+    ///
+    /// `physical_size` is the popup's X window geometry in physical pixels —
+    /// pass `bounds() x scale_factor()` (NOT `viewport_size()`, which reports
+    /// logical size on HiDPI). The X window id itself is found server-side because
+    /// gpui's X11 `window_handle()` is a hard `unimplemented!()` — calling it
+    /// panics and, with `panic = "abort"` in the release profile, kills the
+    /// whole app.
+    ///
+    /// The `Err` text is the reason the drag fell back to the compositor path;
+    /// it goes straight into the drag trace.
+    pub fn begin_locating(app_id: &str, physical_size: (f32, f32)) -> Result<Self, String> {
+        let (conn, root) = connect_root()?;
+        let expected = (physical_size.0.round() as i32, physical_size.1.round() as i32);
+        let window = locate_popup_window(
+            &conn,
+            root,
+            app_id,
+            std::process::id(),
+            expected,
+            true,
+        )?;
+        Self::attach(conn, root, window)
+    }
+
+    fn attach(conn: RustConnection, root: u32, window: u32) -> Result<Self, String> {
+        let pointer = conn
+            .query_pointer(root)
+            .map_err(|error| format!("query_pointer error: {error}"))?
+            .reply()
+            .map_err(|error| format!("query_pointer reply: {error}"))?;
+        let origin = conn
+            .translate_coordinates(window, root, 0, 0)
+            .map_err(|error| format!("translate_coordinates error: {error}"))?
+            .reply()
+            .map_err(|error| format!("translate_coordinates reply: {error}"))?;
+        let pointer_pos = (i32::from(pointer.root_x), i32::from(pointer.root_y));
+        let window_pos = (i32::from(origin.dst_x), i32::from(origin.dst_y));
+        Ok(Self {
+            grab_offset: (pointer_pos.0 - window_pos.0, pointer_pos.1 - window_pos.1),
+            conn,
+            root,
+            window,
+            last: window_pos,
+            started: Instant::now(),
+            ticks: 0,
+            moves: 0,
+        })
+    }
+
+    pub fn window(&self) -> u32 {
+        self.window
+    }
+
+    pub fn root(&self) -> u32 {
+        self.root
+    }
+
+    /// Pointer-minus-window offset the drag grabbed at (physical px).
+    pub fn grab_offset(&self) -> (i32, i32) {
+        self.grab_offset
+    }
+
+    /// Where the window was before the drag started (physical px).
+    pub fn start_position(&self) -> (i32, i32) {
+        (self.last.0, self.last.1)
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        self.started.elapsed()
+    }
+
+    pub fn counters(&self) -> (u32, u32) {
+        (self.ticks, self.moves)
+    }
+
+    /// Where the server says the window is right now (physical px).
+    pub fn live_position(&self) -> Option<(i32, i32)> {
+        let origin = self
+            .conn
+            .translate_coordinates(self.window, self.root, 0, 0)
+            .ok()?
+            .reply()
+            .ok()?;
+        Some((i32::from(origin.dst_x), i32::from(origin.dst_y)))
+    }
+
+    /// Advance the drag once.
+    pub fn tick(&mut self) -> Tick {
+        self.ticks += 1;
+        if self.started.elapsed() > MAX_DRAG {
+            return Tick::Finished("safety ceiling reached".to_string());
+        }
+        // The button state comes from the same round trip as the position, so a
+        // release is noticed without depending on gpui's mouse-up delivery.
+        let Ok(cookie) = self.conn.query_pointer(self.root) else {
+            return Tick::Finished("query_pointer request failed".to_string());
+        };
+        let Ok(reply) = cookie.reply() else {
+            return Tick::Finished("query_pointer reply failed".to_string());
+        };
+        if !reply.mask.contains(KeyButMask::BUTTON1) {
+            return Tick::Finished("left button released".to_string());
+        }
+        let target = (
+            i32::from(reply.root_x) - self.grab_offset.0,
+            i32::from(reply.root_y) - self.grab_offset.1,
+        );
+        if target == self.last {
+            return Tick::Still;
+        }
+        let aux = ConfigureWindowAux {
+            x: Some(target.0),
+            y: Some(target.1),
+            ..Default::default()
+        };
+        // `check` waits for the server's verdict, so a refused move (BadWindow on
+        // a window that just closed, BadMatch, …) is reported instead of silently
+        // vanishing into the error queue.
+        match self.conn.configure_window(self.window, &aux) {
+            Ok(cookie) => {
+                if let Err(error) = cookie.check() {
+                    return Tick::Finished(format!("ConfigureWindow rejected: {error}"));
+                }
+            }
+            Err(error) => {
+                return Tick::Finished(format!("ConfigureWindow error: {error}"));
+            }
+        }
+        let _ = self.conn.flush();
+        self.last = target;
+        self.moves += 1;
+        Tick::Moved(target.0, target.1)
+    }
+}
+
+impl PopupDrag for WindowDrag {
+    fn describe_start(&self) -> String {
+        format!(
+            "drag armed: x_window=0x{:x} grab_offset=({},{}) start=({},{}) root=0x{:x}",
+            self.window(),
+            self.grab_offset().0,
+            self.grab_offset().1,
+            self.start_position().0,
+            self.start_position().1,
+            self.root(),
+        )
+    }
+
+    fn tick(&mut self) -> Tick {
+        WindowDrag::tick(self)
+    }
+
+    fn describe_finish(&self, reason: &str) -> String {
+        let (ticks, moves) = self.counters();
+        format!(
+            "drag finished: {reason}; {ticks} ticks, {moves} moves, {:?} elapsed; server says {:?}",
+            self.elapsed(),
+            self.live_position(),
+        )
+    }
+}
+
+/// Top-level candidates for this process's windows: the root's children plus
+/// *their* children.
+///
+/// A reparenting window manager (cosmic-comp's Smithay XWM, mutter) wraps each
+/// client in a frame that is the root's child, so the client — the window with
+/// `WM_CLASS`/`_NET_WM_PID` — sits one level down. Scanning the root alone
+/// finds nothing there, which silently disabled every popup move/map/unmap.
+/// The child queries are pipelined, so this costs one round-trip of latency.
+pub(in crate::platform) fn candidate_windows(conn: &RustConnection, root: u32) -> Result<Vec<u32>, String> {
+    let top = conn
+        .query_tree(root)
+        .map_err(|error| format!("query_tree error: {error}"))?
+        .reply()
+        .map_err(|error| format!("query_tree reply: {error}"))?
+        .children;
+    let cookies: Vec<_> = top.iter().map(|window| conn.query_tree(*window)).collect();
+    let mut all = top;
+    for cookie in cookies {
+        if let Some(reply) = cookie.ok().and_then(|cookie| cookie.reply().ok()) {
+            all.extend(reply.children);
+        }
+    }
+    Ok(all)
+}
+
+/// Connect to the X server and resolve the default root window.
+pub(in crate::platform) fn connect_root() -> Result<(RustConnection, u32), String> {
+    let (conn, screen) =
+        x11rb::connect(None).map_err(|error| format!("x11rb::connect failed: {error}"))?;
+    let root = conn
+        .setup()
+        .roots
+        .get(screen)
+        .map(|screen| screen.root)
+        .ok_or_else(|| format!("no X screen {screen}"))?;
+    Ok((conn, root))
+}
+
+/// Reposition this process's popup window without a drag in progress.
+///
+/// Used to park the persistent popup offscreen ("hide") and to bring it back
+/// to the cursor-follow position ("show") — both without destroying the GPUI
+/// window, so toggling stays instant. Same server-side locate as the drag
+/// path; fails (logged, non-fatal) on native Wayland where there is no X
+/// window to configure.
+///
+/// `ConfigureWindow` is legal on unmapped windows and takes effect on map,
+/// so — unlike the drag — this deliberately does NOT require the window to
+/// be viewable: showing moves first, then maps.
+pub fn move_popup_to(app_id: &str, physical_size: (f32, f32), x: i32, y: i32) -> Result<(), String> {
+    let (conn, root) = connect_root()?;
+    let expected = (physical_size.0.round() as i32, physical_size.1.round() as i32);
+    let window = locate_popup_window(
+        &conn,
+        root,
+        app_id,
+        std::process::id(),
+        expected,
+        false,
+    )?;
+    let aux = ConfigureWindowAux {
+        x: Some(x),
+        y: Some(y),
+        ..Default::default()
+    };
+    conn.configure_window(window, &aux)
+        .map_err(|error| format!("ConfigureWindow error: {error}"))?
+        .check()
+        .map_err(|error| format!("ConfigureWindow rejected: {error}"))?;
+    conn.flush()
+        .map_err(|error| format!("flush error: {error}"))?;
+    Ok(())
+}
+
+/// Map or unmap this process's popup window.
+///
+/// Hiding parks nothing: client `ConfigureWindow` moves on a *managed* X11
+/// window go through the WM as `ConfigureRequest`s, and Mutter silently
+/// clamps absurd positions (e.g. -10000) back onscreen — verified live: the
+/// server accepted the move yet the window stayed put. Unmapping is honored
+/// unconditionally, so hide = unmap, show = move + map. Showing additionally
+/// installs the chrome-less/taskbar-less properties (see
+/// [`apply_managed_window_hints`]) so every map carries them.
+pub fn set_popup_mapped(
+    app_id: &str,
+    physical_size: (f32, f32),
+    mapped: bool,
+) -> Result<(), String> {
+    let (conn, root) = connect_root()?;
+    let expected = (physical_size.0.round() as i32, physical_size.1.round() as i32);
+    // No viewable requirement in either direction: mapping targets an
+    // unmapped window by definition, and unmapping an already-unmapped one
+    // is a harmless server-side no-op (keeps hide idempotent).
+    let window = locate_popup_window(
+        &conn,
+        root,
+        app_id,
+        std::process::id(),
+        expected,
+        false,
+    )?;
+    if mapped {
+        if let Err(error) = apply_managed_window_hints(&conn, window) {
+            eprintln!("[app] popup WM hints not applied: {error}");
+        }
+        conn.map_window(window)
+            .map_err(|error| format!("MapWindow error: {error}"))?
+            .check()
+            .map_err(|error| format!("MapWindow rejected: {error}"))?;
+    } else {
+        conn.unmap_window(window)
+            .map_err(|error| format!("UnmapWindow error: {error}"))?
+            .check()
+            .map_err(|error| format!("UnmapWindow rejected: {error}"))?;
+    }
+    conn.flush()
+        .map_err(|error| format!("flush error: {error}"))?;
+    Ok(())
+}
+
+/// Intern one atom, or explain why not.
+pub(in crate::platform) fn atom(conn: &RustConnection, name: &[u8]) -> Result<u32, String> {
+    conn.intern_atom(false, name)
+        .map_err(|error| format!("intern_atom error: {error}"))?
+        .reply()
+        .map_err(|error| format!("intern_atom reply: {error}"))
+        .map(|reply| reply.atom)
+}
+
+/// First successful hints installation, for the one-line diagnostics log.
+static HINTS_ANNOUNCED: OnceLock<()> = OnceLock::new();
+
+/// Make window managers treat the popup as chrome-less and taskbar-less.
+///
+/// cosmic-comp decides server-side decorations for X11 windows from
+/// `_MOTIF_WM_HINTS` alone — smithay's xwm has no window-type check — and
+/// paints its SSD title bar (min/max/close) unless the hints say the client
+/// wants *no* decorations. gpui only writes those hints for windows created
+/// with `window_decorations: Some(..)`, which the popup is not, so COSMIC
+/// crowned the popup with a compositor title bar on top of its own rounded
+/// card. Sending the same five-word payload gpui uses for
+/// `WindowDecorations::Client` (`[DECORATIONS, 0, 0, 0, 0]`) drops the SSD;
+/// mutter and KWin read the identical property and already show the popup
+/// bare, so this is a no-op for them.
+///
+/// `_NET_WM_STATE` SKIP_TASKBAR/SKIP_PAGER is the EWMH way to stay out of
+/// taskbars and pagers on WMs that don't infer it from the NOTIFICATION
+/// window type. COSMIC's dock ignores both (it exposes every mapped toplevel
+/// unfiltered) — a documented limitation, not something a property can fix.
+///
+/// Called immediately before every map: EWMH takes a window's initial state
+/// from the properties present at map time, and re-asserting per show keeps
+/// us correct even if a WM rewrote the properties while unmapped.
+fn apply_managed_window_hints(conn: &RustConnection, window: u32) -> Result<(), String> {
+    let motif_hints = atom(conn, b"_MOTIF_WM_HINTS")?;
+    conn.change_property32(
+        PropMode::REPLACE,
+        window,
+        motif_hints,
+        motif_hints,
+        // flags = DECORATIONS present; functions = all; decorations = none.
+        &[1 << 1, 0, 0, 0, 0],
+    )
+    .map_err(|error| format!("ChangeProperty _MOTIF_WM_HINTS error: {error}"))?
+    .check()
+    .map_err(|error| format!("ChangeProperty _MOTIF_WM_HINTS rejected: {error}"))?;
+
+    let net_wm_state = atom(conn, b"_NET_WM_STATE")?;
+    let skip_taskbar = atom(conn, b"_NET_WM_STATE_SKIP_TASKBAR")?;
+    let skip_pager = atom(conn, b"_NET_WM_STATE_SKIP_PAGER")?;
+    conn.change_property32(
+        PropMode::REPLACE,
+        window,
+        net_wm_state,
+        AtomEnum::ATOM,
+        &[skip_taskbar, skip_pager],
+    )
+    .map_err(|error| format!("ChangeProperty _NET_WM_STATE error: {error}"))?
+    .check()
+    .map_err(|error| format!("ChangeProperty _NET_WM_STATE rejected: {error}"))?;
+
+    // Re-assert what gpui's X11 backend sets for `WindowKind::PopUp`, so the
+    // full trio is on record even if a future gpui stops writing it.
+    let net_wm_window_type = atom(conn, b"_NET_WM_WINDOW_TYPE")?;
+    let notification = atom(conn, b"_NET_WM_WINDOW_TYPE_NOTIFICATION")?;
+    conn.change_property32(
+        PropMode::REPLACE,
+        window,
+        net_wm_window_type,
+        AtomEnum::ATOM,
+        &[notification],
+    )
+    .map_err(|error| format!("ChangeProperty _NET_WM_WINDOW_TYPE error: {error}"))?
+    .check()
+    .map_err(|error| format!("ChangeProperty _NET_WM_WINDOW_TYPE rejected: {error}"))?;
+
+    if HINTS_ANNOUNCED.set(()).is_ok() {
+        eprintln!(
+            "[app] popup X11 hints installed on 0x{window:x} \
+             (motif: no decorations; state: skip-taskbar/skip-pager; type: notification)"
+        );
+    }
+    Ok(())
+}
+
+/// Live geometry (device px: x, y, w, h) of this process's popup X window.
+///
+/// Matches WM_CLASS + pid like the drag locate, but with NO size precondition
+/// and NO viewable requirement beyond being mapped: it works at the window's
+/// current position (it may have been dragged) and never matches the 2x2
+/// holder — the largest match wins.
+///
+/// The outside-click test no longer uses X for this (the X pointer is frozen
+/// over Wayland-native windows, so the popup reports the presses it handles
+/// instead); kept for X-side debugging.
+#[allow(dead_code)]
+pub fn popup_geometry(app_id: &str) -> Option<(i32, i32, i32, i32)> {
+    let (conn, root) = connect_root().ok()?;
+    let windows = candidate_windows(&conn, root).ok()?;
+    let net_wm_pid = conn
+        .intern_atom(false, b"_NET_WM_PID")
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
+    let pid = std::process::id();
+    let mut best: Option<(i32, i32, i32, i32)> = None;
+    for window in windows {
+        let Some(class) = window_class(&conn, window) else {
+            continue;
+        };
+        if !class
+            .windows(app_id.len())
+            .any(|chunk| chunk == app_id.as_bytes())
+        {
+            continue;
+        }
+        if let Some(owner) = window_pid(&conn, net_wm_pid, window) {
+            if owner != pid {
+                continue;
+            }
+        }
+        let mapped = conn
+            .get_window_attributes(window)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .map(|attrs| attrs.map_state == MapState::VIEWABLE)
+            .unwrap_or(false);
+        if !mapped {
+            continue;
+        }
+        let geo = conn.get_geometry(window).ok()?.reply().ok()?;
+        let origin = conn
+            .translate_coordinates(window, root, 0, 0)
+            .ok()?
+            .reply()
+            .ok()?;
+        let candidate = (
+            i32::from(origin.dst_x),
+            i32::from(origin.dst_y),
+            i32::from(geo.width),
+            i32::from(geo.height),
+        );
+        let area = candidate.2 as i64 * candidate.3 as i64;
+        let best_area = best.map(|b| b.2 as i64 * b.3 as i64).unwrap_or(-1);
+        if area > best_area {
+            best = Some(candidate);
+        }
+    }
+    best
+}
+
+/// The X id of this process's popup window — the same WM_CLASS/`_NET_WM_PID`
+/// match as [`popup_geometry`], plus `_NET_WM_PID`-checked same-class
+/// non-mapped windows, so it resolves even before the first show. Size filter
+/// is skipped; among same-process windows the popup (720×960) is the largest
+/// surface, which keeps the Settings/Wizard windows from matching.
+pub fn popup_window_id(app_id: &str) -> Option<u32> {
+    let (conn, root) = connect_root().ok()?;
+    let windows = candidate_windows(&conn, root).ok()?;
+    let net_wm_pid = conn
+        .intern_atom(false, b"_NET_WM_PID")
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
+    let pid = std::process::id();
+    let mut best: Option<(u32, i64)> = None;
+    for window in windows {
+        let Some(class) = window_class(&conn, window) else {
+            continue;
+        };
+        if !class
+            .windows(app_id.len())
+            .any(|chunk| chunk == app_id.as_bytes())
+        {
+            continue;
+        }
+        if let Some(owner) = window_pid(&conn, net_wm_pid, window) {
+            if owner != pid {
+                continue;
+            }
+        }
+        let area = conn
+            .get_geometry(window)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .map(|geo| geo.width as i64 * geo.height as i64)
+            .unwrap_or(1);
+        let best_area = best.map(|b| b.1).unwrap_or(-1);
+        if area > best_area {
+            best = Some((window, area));
+        }
+    }
+    best.map(|b| b.0)
+}
+
+/// Find this process's popup window among the root's top-level windows.
+///
+/// Matched by: WM_CLASS containing the app id,
+/// `_NET_WM_PID` equal to this process when the property exists, and physical
+/// size within [`SIZE_TOLERANCE`] of the expected popup size. The size check is
+/// what keeps the Settings window (same pid, same class, different size) out.
+/// `mapped_only` additionally requires `MapState::VIEWABLE` (used only by the
+/// drag path — a drag on an invisible window is nonsense; move/map/unmap must
+/// also work on unmapped windows).
+pub(in crate::platform) fn locate_popup_window(
+    conn: &RustConnection,
+    root: u32,
+    app_id: &str,
+    pid: u32,
+    expected: (i32, i32),
+    mapped_only: bool,
+) -> Result<u32, String> {
+    let windows = candidate_windows(conn, root)?;
+    let net_wm_pid = conn
+        .intern_atom(false, b"_NET_WM_PID")
+        .map_err(|error| format!("intern_atom error: {error}"))?
+        .reply()
+        .map_err(|error| format!("intern_atom reply: {error}"))?
+        .atom;
+    let mut candidates = Vec::new();
+    for window in windows {
+        let class = match window_class(conn, window) {
+            Some(class) => class,
+            None => continue,
+        };
+        if !class
+            .windows(app_id.len())
+            .any(|chunk| chunk == app_id.as_bytes())
+        {
+            continue;
+        }
+        // Record every same-class top-level with its distinguishing facts, so
+        // the failure message explains exactly why each was rejected.
+        let attrs = conn
+            .get_window_attributes(window)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok());
+        let geo = conn
+            .get_geometry(window)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok());
+        let owner = window_pid(conn, net_wm_pid, window)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "?".to_string());
+        let size = geo
+            .as_ref()
+            .map(|geo| format!("{}x{}", geo.width, geo.height))
+            .unwrap_or_else(|| "?".to_string());
+        let mapped = attrs
+            .as_ref()
+            .map(|attrs| u8::from(attrs.map_state))
+            .unwrap_or(0);
+        candidates.push(format!(
+            "0x{window:x} pid={owner} size={size} map_state={mapped}"
+        ));
+        if let Some(owner) = window_pid(conn, net_wm_pid, window) {
+            if owner != pid {
+                continue;
+            }
+        }
+        let Some(attrs) = attrs else { continue };
+        if mapped_only && attrs.map_state != MapState::VIEWABLE {
+            continue;
+        }
+        let Some(geo) = geo else { continue };
+        let (width, height) = (i32::from(geo.width), i32::from(geo.height));
+        // Width pins the popup apart from Settings/Setup (wider) and gpui's 1x1
+        // helper window. Height is only bounded: cosmic-comp shrinks windows
+        // that would not fit under its panel (observed 560 -> 478), so an
+        // exact height match would reject the real popup.
+        if (width - expected.0).abs() > SIZE_TOLERANCE
+            || height < MIN_POPUP_HEIGHT
+            || height > expected.1 + SIZE_TOLERANCE
+        {
+            continue;
+        }
+        return Ok(window);
+    }
+    Err(format!(
+        "no viewable X window matches class={app_id} pid={pid} size≈{}x{}; \
+         same-class windows: {}",
+        expected.0,
+        expected.1,
+        if candidates.is_empty() {
+            "(none)".to_string()
+        } else {
+            candidates.join(", ")
+        }
+    ))
+}
+
+/// WM_CLASS (instance\0class, both STRING) of a window, raw bytes.
+pub(in crate::platform) fn window_class(conn: &RustConnection, window: u32) -> Option<Vec<u8>> {
+    let reply = conn
+        .get_property(false, window, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 256)
+        .ok()?
+        .reply()
+        .ok()?;
+    if reply.type_ != u32::from(AtomEnum::STRING) {
+        return None;
+    }
+    Some(reply.value)
+}
+
+/// `_NET_WM_PID` of a window, when present.
+pub(in crate::platform) fn window_pid(conn: &RustConnection, net_wm_pid: u32, window: u32) -> Option<u32> {
+    let reply = conn
+        .get_property(false, window, net_wm_pid, AtomEnum::CARDINAL, 0, 1)
+        .ok()?
+        .reply()
+        .ok()?;
+    let first = reply.value32()?.next()?;
+    Some(first)
+}
+
+/// Advertise a GTK-style client-side frame to the compositor.
+///
+/// Sets `_GTK_FRAME_EXTENTS = [margin; 4]` on the window whose title matches
+/// `title` (this process only). Mutter reads the property as "the visible frame
+/// is inset from the window rectangle by this much", which is what makes it
+/// place and shadow the window like a GTK CSD window instead of twinning our
+/// rounded, transparent corners with the shadow of a square rectangle.
+///
+/// Used by Settings/Setup, which reserve exactly that margin for their own
+/// painted shadow (`theme::WINDOW_SHADOW_MARGIN`).
+pub fn set_frame_extents(title: &str, margin: u32) -> Result<(), String> {
+    let (conn, root) = connect_root()?;
+    let window = locate_window_by_title(&conn, root, title)?;
+    let gtk_frame_extents = conn
+        .intern_atom(false, b"_GTK_FRAME_EXTENTS")
+        .map_err(|error| format!("intern_atom error: {error}"))?
+        .reply()
+        .map_err(|error| format!("intern_atom reply: {error}"))?
+        .atom;
+    conn.change_property32(
+        PropMode::REPLACE,
+        window,
+        gtk_frame_extents,
+        AtomEnum::CARDINAL,
+        &[margin; 4],
+    )
+    .map_err(|error| format!("ChangeProperty error: {error}"))?
+    .check()
+    .map_err(|error| format!("ChangeProperty rejected: {error}"))?;
+    conn.flush()
+        .map_err(|error| format!("flush error: {error}"))?;
+    Ok(())
+}
+
+/// Find one of this process's windows by its `_NET_WM_NAME` / `WM_NAME`.
+///
+/// Title matching (rather than the popup locator's WM_CLASS + size) is what
+/// lets Settings and Setup be told apart while both are open, and it survives
+/// the size change that comes with the shadow margin.
+fn locate_window_by_title(
+    conn: &RustConnection,
+    root: u32,
+    title: &str,
+) -> Result<u32, String> {
+    let windows = candidate_windows(conn, root)?;
+    let net_wm_pid = conn
+        .intern_atom(false, b"_NET_WM_PID")
+        .map_err(|error| format!("intern_atom error: {error}"))?
+        .reply()
+        .map_err(|error| format!("intern_atom reply: {error}"))?
+        .atom;
+    let candidates = windows
+        .iter()
+        .map(|window| format!("{window:#x}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    for window in windows {
+        if window_pid(conn, net_wm_pid, window) != Some(std::process::id()) {
+            continue;
+        }
+        if window_name(conn, window).as_deref() == Some(title) {
+            return Ok(window);
+        }
+    }
+    Err(format!(
+        "no window titled {title:?} among this pid's windows ({candidates})"
+    ))
+}
+
+/// `_NET_WM_NAME` (UTF8_STRING), falling back to the legacy `WM_NAME`.
+fn window_name(conn: &RustConnection, window: u32) -> Option<String> {
+    let utf8 = || -> Option<String> {
+        let atom = conn
+            .intern_atom(false, b"UTF8_STRING")
+            .ok()?
+            .reply()
+            .ok()?
+            .atom;
+        let net_wm_name = conn
+            .intern_atom(false, b"_NET_WM_NAME")
+            .ok()?
+            .reply()
+            .ok()?
+            .atom;
+        let reply = conn
+            .get_property(false, window, net_wm_name, atom, 0, 512)
+            .ok()?
+            .reply()
+            .ok()?;
+        (reply.type_ == atom && !reply.value.is_empty())
+            .then(|| String::from_utf8_lossy(&reply.value).into_owned())
+    };
+    utf8().or_else(|| {
+        let reply = conn
+            .get_property(false, window, AtomEnum::WM_NAME, AtomEnum::STRING, 0, 512)
+            .ok()?
+            .reply()
+            .ok()?;
+        (reply.type_ == u32::from(AtomEnum::STRING) && !reply.value.is_empty())
+            .then(|| String::from_utf8_lossy(&reply.value).into_owned())
+    })
+}

@@ -603,7 +603,7 @@ pub mod light {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::serial_lock;
+    use app_shared::test_util::serial_lock;
 
     /// Minimal palette used to prove the override plumbing without GTK.
     fn fixture(is_dark: bool) -> GtkPalette {

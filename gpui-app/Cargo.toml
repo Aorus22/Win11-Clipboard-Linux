@@ -21,6 +21,8 @@ gpui-platform = { package = "gpui-pre-platform", version = "=0.3.8", features = 
 anyhow = "1"
 # Reused core backend — shared with Tauri app, completely decoupled from Tauri UI
 win11-clipboard-history-lib = { package = "win11-clipboard-core", path = "../core" }
+# Toolkit-independent code shared with the iced frontend.
+app-shared = { path = "../app-shared" }
 # System integration (Phase 5): tray, global hotkeys, portal theme listener.
 tray-icon = "0.24"
 muda = "0.19"
