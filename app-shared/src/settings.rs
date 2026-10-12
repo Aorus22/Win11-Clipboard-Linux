@@ -29,6 +29,9 @@ fn default_category() -> String {
 pub struct AppSettings {
     #[serde(default = "default_theme_mode")]
     pub theme_mode: String,
+    /// `auto`, native Wayland for the current desktop, or XWayland compatibility.
+    #[serde(default = "default_platform_backend")]
+    pub platform_backend: String,
     #[serde(default = "default_opacity")]
     pub dark_background_opacity: f32,
     #[serde(default = "default_opacity")]
@@ -63,6 +66,9 @@ pub struct AppSettings {
 fn default_theme_mode() -> String {
     "system".to_string()
 }
+fn default_platform_backend() -> String {
+    "auto".to_string()
+}
 fn default_opacity() -> f32 {
     0.70
 }
@@ -83,6 +89,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             theme_mode: default_theme_mode(),
+            platform_backend: default_platform_backend(),
             dark_background_opacity: default_opacity(),
             light_background_opacity: default_opacity(),
             enable_dynamic_tray_icon: true,
@@ -100,6 +107,9 @@ impl Default for AppSettings {
 
 impl AppSettings {
     pub fn validate(&mut self) {
+        if !["auto", "wayland", "xwayland"].contains(&self.platform_backend.as_str()) {
+            self.platform_backend = default_platform_backend();
+        }
         self.dark_background_opacity = self.dark_background_opacity.clamp(0.0, 1.0);
         self.light_background_opacity = self.light_background_opacity.clamp(0.0, 1.0);
         if !["system", "dark", "light", "gtk"].contains(&self.theme_mode.as_str()) {

@@ -1,28 +1,23 @@
 name: Build AppImage
 
-# AppImage builds for Win11-Clipboard-Linux, meniru pola
-# web-term/.github/workflows/build-appimage.yml.
+# "Anylinux" AppImage of the GPUI frontend, built with quick-sharun
+# (https://github.com/pkgforge-dev/Anylinux-AppImages). The image bundles glibc,
+# the dynamic loader and every library (GTK, Mesa, Vulkan, xkbcommon, ...), so
+# ONE build runs on any x86_64 Linux regardless of distro or glibc version.
+# Only the kernel, and NVIDIA's proprietary driver on NVIDIA machines, come from
+# the host. quick-sharun needs an Arch Linux build base (hence the container).
 #
-# The AppImage is produced by docker/Dockerfile.build via
-# docker/build-appimage.sh, so CI and a local run use byte-identical toolchains
-# (see docker/README.md). GPUI only — the Tauri frontend is not built here.
-#
-#   dist/win11-clipboard-history_*_x86_64.AppImage
+#   dist/win11-clipboard-history_<version>_x86_64.AppImage
 #   dist/SHA256SUMS.txt
 #
-# What each run gets:
-#   manual dispatch            -> build, Actions artifact
-#   manual dispatch + publish  -> build + publish to the given tag in Releases
+# Jobs: build (Arch container) -> smoke (the same file on Fedora/Ubuntu/Debian/
+# Arch/Alpine, CLI paths only: there is no display) -> publish (optional).
 #
-# Nothing here runs automatically. Invoke explicitly from the Actions tab
-# ("Run workflow") with a tag and the publish checkbox:
+# Nothing here runs automatically. Invoke from the Actions tab ("Run workflow"):
+#   manual dispatch            -> build + smoke test, Actions artifact
+#   manual dispatch + publish  -> also publish to the given tag in Releases
 #   latest + publish   -> rolling release, stable download URL
 #   vX.Y.Z + publish   -> versioned release (tag is created if missing)
-#
-# The rolling release keeps a stable download URL:
-#   https://github.com/<owner>/<repo>/releases/download/latest/win11-clipboard-history_<version>_amd64.AppImage
-#
-# No `paths:` filter on purpose: a `v*` tag push must always produce a release.
 
 on:
   workflow_dispatch:
@@ -32,7 +27,7 @@ on:
         required: true
         default: 'latest'
       publish:
-        description: 'Publish the built AppImages to Releases'
+        description: 'Publish the built AppImage to Releases'
         required: false
         default: true
         type: boolean
@@ -45,76 +40,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  appimage:
-    name: Linux x86_64 AppImage
+  build:
+    name: Build Anylinux AppImage (x86_64)
     runs-on: ubuntu-latest
+    container: ghcr.io/pkgforge-dev/archlinux:latest
     timeout-minutes: 120
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Cache cargo downloads and sccache
+      - name: Preparing container
+        uses: pkgforge-dev/anylinux-setup-action@b2d1ce4216f71162e00ae58fa11ee9aeb723d0d5 # v5
+
+      - name: Cache cargo downloads
         uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            ~/.cache/sccache
-          key: build-caches-${{ runner.os }}-${{ hashFiles('docker/Dockerfile.build', 'gpui-app/Cargo.lock', 'core/Cargo.toml') }}
+          key: cargo-arch-${{ hashFiles('gpui-app/Cargo.lock') }}
           restore-keys: |
-            build-caches-${{ runner.os }}-
+            cargo-arch-
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Install dependencies
+        run: /bin/sh scripts/anylinux/get-dependencies.sh
 
-      - name: Build builder image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile.build
-          tags: winclip-build
-          load: true
-          # Image layers (apt deps, sccache, helper tools) survive across runs
-          # in the GitHub cache, so rebuilds skip unchanged layers.
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build AppImage
-        run: |
-          docker run --rm \
-            -v "$PWD:/src" \
-            -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
-            -v "$HOME/.cargo/git:/usr/local/cargo/git" \
-            -v "$HOME/.cache/sccache:/root/.cache/sccache" \
-            -w /src \
-            winclip-build bash docker/build-appimage.sh
-
-      # Checks the end-user contract from the artifacts themselves:
-      # every AppImage must verify against SHA256SUMS and extract without FUSE.
-      - name: Verify variants
-        run: |
-          set -euo pipefail
-          ls -l dist
-          cat dist/SHA256SUMS.txt
-          ( cd dist && sha256sum -c SHA256SUMS.txt )
-
-          work="$(mktemp -d)"
-          for image in "$PWD"/dist/*.AppImage; do
-            name="$(basename "$image")"
-            rm -rf "${work:?}/squashfs-root"
-            ( cd "$work" && "$image" --appimage-extract >/dev/null )
-            entries="$(find "$work/squashfs-root" -maxdepth 1 | wc -l)"
-            size="$(du -h "$image" | cut -f1)"
-            echo "$name  size=$size  root-entries=$entries  extract=ok"
-          done
-
-      # The build container runs as root, so the mount-backed caches come back
-      # root-owned (cargo also unpacks registry sources read-only) and the
-      # actions/cache post step would then fail to tar them. Hand them back.
-      - name: Fix cache ownership
-        if: always()
-        run: sudo chown -R "$(id -u):$(id -g)" "$HOME/.cargo" "$HOME/.cache/sccache" || true
+      - name: Make AppImage
+        run: /bin/sh scripts/anylinux/make-appimage.sh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -126,12 +79,59 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # Published ONLY on explicit manual dispatch with publish ticked —
-      # never automatically. Pick the tag in the Actions tab ("Run workflow"):
-      # `latest` for the rolling release, `vX.Y.Z` for a versioned one
-      # (created if missing).
+  # The same file, unmodified, on distros that differ in glibc, libc flavour and
+  # installed libraries. Without a display only the pure CLI paths can run, which
+  # is exactly what proves the bundled glibc + libraries load.
+  smoke:
+    name: Run on ${{ matrix.image }}
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - fedora:43
+          - fedora:44
+          - ubuntu:22.04
+          - ubuntu:24.04
+          - debian:12
+          - archlinux:latest
+          - alpine:latest
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: Win11Clipboard-AppImage-${{ github.sha }}
+          path: dist
+
+      # Plain `docker run` (not a job container): these images have no Node, and
+      # the point is to run the file on the bare distro.
+      - name: --help and --version on ${{ matrix.image }}
+        run: |
+          chmod +x dist/*.AppImage
+          docker run --rm -v "$PWD/dist:/dist:ro" "${{ matrix.image }}" sh -c '
+            head -2 /etc/os-release
+            cp /dist/*.AppImage /tmp/app && chmod +x /tmp/app
+            /tmp/app --help | head -12
+            /tmp/app --version
+          '
+
+  publish:
+    name: Publish release
+    if: inputs.publish
+    needs: [build, smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: Win11Clipboard-AppImage-${{ github.sha }}
+          path: dist
+
       - name: Publish release
-        if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}

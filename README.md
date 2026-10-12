@@ -83,8 +83,9 @@ Most Linux clipboard managers are purely functional but lack visual appeal. This
 
 ## Desktop support
 
-One binary picks its window backend at startup (`platform backend: …` in the log;
-override with `WIN11_CLIPBOARD_BACKEND=x11|gnome|cosmic`).
+One binary picks its window backend at startup. The setup wizard offers a
+native Wayland or XWayland choice on Wayland sessions; `WIN11_CLIPBOARD_BACKEND`
+can override it for debugging.
 
 | Desktop | Backend | Popup |
 | --- | --- | --- |

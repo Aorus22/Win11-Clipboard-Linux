@@ -1662,15 +1662,13 @@ fn render_drag_strip(is_dark: bool, cx: &mut Context<Popup>) -> impl IntoElement
                 .cursor_pointer()
                 .on_mouse_down(
                     gpui::MouseButton::Left,
-                    cx.listener(|_, _, _, cx| {
+                    cx.listener(|this, _, _, cx| {
                         cx.stop_propagation();
+                        this.request_hide();
+                        let _ = focus_manager::restore_focused_window();
+                        cx.notify();
                     }),
                 )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.request_hide();
-                    let _ = focus_manager::restore_focused_window();
-                    cx.notify();
-                }))
                 .child(
                     // Round hit-friendly bubble: same close-hover red as the
                     // Settings window's control, so hovering it reads as the

@@ -12,8 +12,10 @@ import Meta from 'gi://Meta';
 import Mtk from 'gi://Mtk';
 import Clutter from 'gi://Clutter';
 import Shell from 'gi://Shell';
+import St from 'gi://St';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 
 // The GPUI and iced frontends share this extension; both use the same popup title.
 const APP_IDS = [
@@ -22,6 +24,9 @@ const APP_IDS = [
 ];
 const BUS_NAME = 'dev.gustavosett.ClipboardHistoryGpui.Shell';
 const OBJECT_PATH = '/dev/gustavosett/ClipboardHistoryGpui/Shell';
+// Single-instance sockets of the two frontends (`$XDG_RUNTIME_DIR/<name>`);
+// writing a command word and a newline to one is what `<exe> --toggle` does.
+const SOCKETS = ['win11-clipboard-gpui.sock', 'win11-clipboard-iced.sock'];
 // The popup is told apart from Settings/Setup (same app id) by its title.
 const POPUP_TITLE = 'Clipboard History Popup';
 
@@ -78,17 +83,26 @@ export default class ClipboardHelper extends Extension {
         this._nameId = Gio.DBus.session.own_name(BUS_NAME, Gio.BusNameOwnerFlags.NONE, null, null);
         this._visible = false;
         this._pos = null;
+        this._hiddenWindows = new Map();
         this._hideFromDock();
         this._watchWindows();
+        for (const actor of global.get_window_actors()) {
+            const win = actor.meta_window;
+            if (this._isPopup(win) || this._isHolder(win)) this._hideFromWindowLists(win);
+        }
         this._captureId = global.stage.connect('captured-event', (_s, event) => this._onEvent(event));
+        this._addIndicator();
     }
 
     disable() {
+        this._indicator?.destroy();
+        this._indicator = null;
         if (this._captureId) global.stage.disconnect(this._captureId);
         this._captureId = 0;
         if (this._createdId) global.display.disconnect(this._createdId);
         if (this._mapId) global.window_manager.disconnect(this._mapId);
         this._createdId = this._mapId = 0;
+        this._restoreWindowLists();
         this._restoreDock();
         if (this._nameId) Gio.DBus.session.unown_name(this._nameId);
         this._nameId = 0;
@@ -142,13 +156,41 @@ export default class ClipboardHelper extends Extension {
             win.make_above();
             Main.activateWindow(win);
         } else {
+            // mutter refuses to minimize a skip-taskbar window ("cannot be
+            // minimized, but something tried anyways"), and hiding the popup
+            // from window lists sets exactly that. Lift the flag around the
+            // call; both steps are synchronous, so no list ever sees it.
+            const hidden = this._hiddenWindows.has(win);
+            if (hidden) win.show_in_window_list();
             win.minimize();
+            if (hidden) win.hide_from_window_list();
         }
+    }
+
+    _hideFromWindowLists(win) {
+        if (this._hiddenWindows.has(win)) return;
+        try {
+            const alreadyHidden = win.is_skip_taskbar();
+            if (!alreadyHidden) {
+                win.hide_from_window_list();
+                this._hiddenWindows.set(win, true);
+            }
+        } catch (error) {
+            console.error(`[clipboard-history] could not hide popup from taskbars: ${error}`);
+        }
+    }
+
+    _restoreWindowLists() {
+        for (const win of this._hiddenWindows.keys()) {
+            try { win.show_in_window_list(); } catch (_) { /* window already closed */ }
+        }
+        this._hiddenWindows.clear();
     }
 
     // A new popup window starts hidden unless the app already asked to show it.
     _watchWindows() {
         const adopt = win => {
+            if (this._isPopup(win) || this._isHolder(win)) this._hideFromWindowLists(win);
             if (this._isPopup(win)) this._apply(win);
         };
         this._createdId = global.display.connect('window-created', (_d, win) => {
@@ -242,6 +284,38 @@ export default class ClipboardHelper extends Extension {
         this._vkbd.notify_keyval(t + 1000, keyval, Clutter.KeyState.RELEASED);
     }
 
+    // ---- panel icon ----------------------------------------------------
+
+    // Icon-only top-bar button with a small menu. GNOME has no system tray
+    // (StatusNotifier icons need another extension), so the helper provides it.
+    _addIndicator() {
+        const button = new PanelMenu.Button(0.0, 'Clipboard History', false);
+        button.add_child(new St.Icon({
+            icon_name: 'edit-paste-symbolic',
+            style_class: 'system-status-icon',
+        }));
+        button.menu.addAction('Show Clipboard', () => this._signalApp('toggle'));
+        button.menu.addAction('Settings', () => this._signalApp('settings'));
+        button.menu.addAction('Quit', () => this._signalApp('quit'));
+        Main.panel.addToStatusArea('clipboard-history-gpui', button);
+        this._indicator = button;
+    }
+
+    // Same words `<exe> --toggle|--settings-open|--quit` send over the
+    // single-instance socket.
+    _signalApp(word) {
+        const runtime = GLib.get_user_runtime_dir();
+        for (const name of SOCKETS) {
+            try {
+                const conn = new Gio.SocketClient().connect(
+                    new Gio.UnixSocketAddress({path: `${runtime}/${name}`}), null);
+                conn.get_output_stream().write_all(`${word}\n`, null);
+                conn.close(null);
+                return;
+            } catch (_) { /* that frontend is not running */ }
+        }
+    }
+
     // ---- outside click -------------------------------------------------
 
     _onEvent(event) {
@@ -266,6 +340,8 @@ export default class ClipboardHelper extends Extension {
     _hideFromDock() {
         const sys = Shell.AppSystem.get_default();
         this._origGetRunning = sys.get_running;
+        const tracker = Shell.WindowTracker.get_default();
+        this._origGetWindowApp = tracker.get_window_app;
         const self = this;
         sys.get_running = function (...args) {
             return self._origGetRunning.apply(this, args).filter(app => {
@@ -273,13 +349,20 @@ export default class ClipboardHelper extends Extension {
                 return !(wins.length && wins.every(w => self._isPopup(w) || self._isHolder(w)));
             });
         };
+        tracker.get_window_app = function (win, ...args) {
+            if (self._isPopup(win) || self._isHolder(win)) return null;
+            return self._origGetWindowApp.apply(this, [win, ...args]);
+        };
         sys.emit('installed-changed');
     }
 
     _restoreDock() {
         const sys = Shell.AppSystem.get_default();
+        const tracker = Shell.WindowTracker.get_default();
         if (this._origGetRunning) sys.get_running = this._origGetRunning;
+        if (this._origGetWindowApp) tracker.get_window_app = this._origGetWindowApp;
         this._origGetRunning = null;
+        this._origGetWindowApp = null;
     }
 }
 

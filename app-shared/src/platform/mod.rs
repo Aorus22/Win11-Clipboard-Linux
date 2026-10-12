@@ -162,6 +162,7 @@ pub trait PlatformBackend: Sync + Send {
 }
 
 static BACKEND: OnceLock<&'static dyn PlatformBackend> = OnceLock::new();
+static WAYLAND_SESSION: OnceLock<bool> = OnceLock::new();
 
 /// The active backend. [`init`] must have run (done first thing in `main`).
 pub fn backend() -> &'static dyn PlatformBackend {
@@ -171,7 +172,16 @@ pub fn backend() -> &'static dyn PlatformBackend {
 /// Pick the backend and let it prepare the process. Must run before gpui
 /// initializes and before anything caches the session type.
 pub fn init() {
-    let backend = select();
+    init_with_preference(None);
+}
+
+/// Pick the backend using a saved user preference after any explicit debug
+/// override from the environment.
+pub fn init_with_preference(preference: Option<&str>) {
+    // Cache the real session before the XWayland backend rewrites the
+    // environment for toolkit initialization.
+    let _ = wayland_session();
+    let backend = select(preference);
     eprintln!("[app] platform backend: {}", backend.name());
     backend.prepare_process();
     let _ = BACKEND.set(backend);
@@ -183,11 +193,10 @@ static GNOME_BACKEND: gnome::GnomeBackend = gnome::GnomeBackend;
 
 /// Backend choice, in order:
 /// 1. `WIN11_CLIPBOARD_BACKEND=x11|cosmic|gnome` (debug/CI override);
-/// 2. COSMIC desktop on a Wayland session → `cosmic` (layer-shell);
-/// 3. GNOME on a Wayland session **with the helper extension running** → `gnome`;
-/// 4. anything else → `x11` (X11 sessions, and Wayland desktops without a
-///    backend of their own, through XWayland).
-fn select() -> &'static dyn PlatformBackend {
+/// 2. the saved `wayland` / `xwayland` setup choice;
+/// 3. automatic COSMIC or GNOME detection;
+/// 4. `x11` (X11 sessions, and Wayland desktops without a native backend).
+fn select(preference: Option<&str>) -> &'static dyn PlatformBackend {
     if let Ok(name) = std::env::var("WIN11_CLIPBOARD_BACKEND") {
         match name.trim().to_ascii_lowercase().as_str() {
             "x11" => return &X11_BACKEND,
@@ -197,6 +206,26 @@ fn select() -> &'static dyn PlatformBackend {
                 "[app] unknown WIN11_CLIPBOARD_BACKEND={other:?}; choosing automatically"
             ),
         }
+    }
+    let preference = preference.map(|value| value.trim().to_ascii_lowercase());
+    match preference.as_deref() {
+        Some("xwayland") => return &X11_BACKEND,
+        Some("wayland") => {
+            if cosmic::auto_selected() {
+                return &COSMIC_BACKEND;
+            }
+            if gnome::auto_selected() {
+                return &GNOME_BACKEND;
+            }
+            eprintln!(
+                "[app] Wayland was selected, but native desktop integration is not ready; \
+                 using XWayland for this launch"
+            );
+        }
+        Some("auto") | None => {}
+        Some(other) => eprintln!(
+            "[app] unknown saved platform backend {other:?}; choosing automatically"
+        ),
     }
     if cosmic::auto_selected() {
         return &COSMIC_BACKEND;
@@ -210,12 +239,12 @@ fn select() -> &'static dyn PlatformBackend {
 /// Wayland session, read from the environment directly: this runs before
 /// `session::is_wayland()` may be consulted (it caches on first use, and the
 /// x11 backend rewrites the environment it reads).
-pub(crate) fn wayland_session() -> bool {
-    match std::env::var("XDG_SESSION_TYPE") {
+pub fn wayland_session() -> bool {
+    *WAYLAND_SESSION.get_or_init(|| match std::env::var("XDG_SESSION_TYPE") {
         Ok(kind) if kind.eq_ignore_ascii_case("wayland") => true,
         Ok(kind) if kind.eq_ignore_ascii_case("x11") => false,
         _ => std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty()),
-    }
+    })
 }
 
 /// Desktop-specific first-run setup beyond the shortcut. On GNOME Wayland this
