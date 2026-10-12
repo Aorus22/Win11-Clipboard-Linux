@@ -18,4 +18,10 @@ pacman -Syu --noconfirm --needed \
 
 echo "Installing debloated packages (Mesa, Vulkan drivers)..."
 echo "---------------------------------------------------------------"
-get-debloated-pkgs --add-common --prefer-nano
+# The packages come from GitHub releases, which now and then answers 500: retry.
+for attempt in 1 2 3 4; do
+    get-debloated-pkgs --add-common --prefer-nano && break
+    [ "$attempt" -lt 4 ] || { echo "debloated packages unavailable" >&2; exit 1; }
+    echo "retrying in 20 s (attempt $attempt failed)..."
+    sleep 20
+done
