@@ -107,6 +107,11 @@ impl PlatformBackend for GnomeBackend {
     }
 
     fn spawn_outside_click_watcher(&self, hooks: Hooks) {
+        // The extension only sees clicks that do not land on another
+        // application's window (mutter hands those to Wayland before the
+        // stage's `captured-event`), so it is paired with the evdev watcher,
+        // which sees every physical press and needs no compositor help.
+        super::x11::click_watch::spawn_click_watcher(hooks.clone());
         std::thread::Builder::new()
             .name("gnome-outside-click".to_string())
             .spawn(move || {
