@@ -15,6 +15,7 @@ use super::icons::{self, icon};
 use super::titlebar;
 use crate::app_state::{self, Shared};
 use crate::backend::BackendService;
+use crate::platform::shortcuts::Desktop;
 use crate::theme;
 use win11_clipboard_history_lib::{
     permission_checker::{self, PermissionStatus},
@@ -48,6 +49,16 @@ pub struct WizardState {
     pub conflict_error: Option<String>,
     pub copied: bool,
     pub hovered_button: Option<String>,
+    pub selected_backend: String,
+    pub backend_choice_error: Option<String>,
+}
+
+fn backend_choice_available() -> bool {
+    crate::platform::wayland_session()
+        && matches!(
+            crate::platform::shortcuts::current_desktop(),
+            Desktop::Gnome | Desktop::Cosmic
+        )
 }
 
 impl WizardState {
@@ -57,6 +68,12 @@ impl WizardState {
         focus: FocusHandle,
         _cx: &mut gpui::App,
     ) -> Self {
+        let saved_backend = shared.lock().settings.platform_backend.clone();
+        let selected_backend = match saved_backend.as_str() {
+            "wayland" | "xwayland" => saved_backend,
+            _ if backend_choice_available() => "wayland".to_string(),
+            _ => "auto".to_string(),
+        };
         let mut this = Self {
             shared,
             backend,
@@ -76,6 +93,8 @@ impl WizardState {
             conflict_error: None,
             copied: false,
             hovered_button: None,
+            selected_backend,
+            backend_choice_error: None,
         };
         this.refresh_all();
         this
@@ -131,7 +150,9 @@ impl WizardState {
         match registered {
             Some(Ok(_)) => {
                 self.shortcut_registered = true;
-                self.extension_note = crate::platform::setup_desktop_integration();
+                if self.selected_backend == "wayland" && self.extension_note.is_none() {
+                    self.extension_note = crate::platform::setup_desktop_integration();
+                }
                 // Parity micro-delta: React advances after a 1.5s beat; advance at once.
                 self.step = 3;
             }
@@ -161,11 +182,33 @@ impl WizardState {
         }
     }
 
+    fn save_backend_choice(&mut self, cx: &mut Context<Self>) {
+        let config = {
+            let mut shared = self.shared.lock();
+            shared.settings.platform_backend = self.selected_backend.clone();
+            shared.settings.clone()
+        };
+        self.backend_choice_error = crate::settings::save(&config).err();
+        if self.selected_backend == "wayland" && self.extension_note.is_none() {
+            self.extension_note = crate::platform::setup_desktop_integration();
+        }
+        cx.notify();
+    }
+
+    fn select_backend(&mut self, backend: &str, cx: &mut Context<Self>) {
+        if !["wayland", "xwayland"].contains(&backend) {
+            return;
+        }
+        self.selected_backend = backend.to_string();
+        self.save_backend_choice(cx);
+    }
+
     fn handle_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         // Enter advances on welcome/done steps; Esc closes (marks complete only on done).
         if event.keystroke.key.as_str() == "enter" && !event.keystroke.modifiers.control {
             match self.step {
                 0 => {
+                    self.save_backend_choice(cx);
                     self.step = 1;
                     cx.notify();
                 }
@@ -442,7 +485,7 @@ impl WizardState {
             .child(
                 div()
                     .text_size(px(12.25))
-                    .mb(px(32.))
+                    .mb(px(20.))
                     .text_color(if self.is_dark() {
                         theme::dark::text_secondary()
                     } else {
@@ -450,11 +493,100 @@ impl WizardState {
                     })
                     .child("A Windows 11-style clipboard manager for Linux. Let's set up a few things to get you started."),
             )
+            .children(self.render_backend_choice(cx))
             .child(self.button("start".to_string(), "Get Started".to_string(), true, false, cx, |this, _, _, cx| {
+                this.save_backend_choice(cx);
                 this.step = 1;
                 cx.notify();
             }))
             .into_any_element()
+    }
+
+    fn render_backend_choice(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if !backend_choice_available() {
+            return None;
+        }
+
+        let selected_wayland = self.selected_backend == "wayland";
+        let selected_xwayland = self.selected_backend == "xwayland";
+        let is_dark = self.is_dark();
+        let wayland_label = if selected_wayland {
+            "✓ Wayland".to_string()
+        } else {
+            "Wayland".to_string()
+        };
+        let xwayland_label = if selected_xwayland {
+            "✓ XWayland".to_string()
+        } else {
+            "XWayland".to_string()
+        };
+        let explanation = if selected_wayland {
+            "Native Wayland uses GNOME Shell or COSMIC integration. GNOME may need one logout after installing its helper; the choice applies on the next launch."
+        } else {
+            "XWayland compatibility runs the popup through the X11 backend; the choice applies on the next launch."
+        };
+
+        Some(
+            div()
+                .w_full()
+                .mb(px(16.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(if is_dark {
+                            theme::dark::text_secondary()
+                        } else {
+                            theme::light::text_secondary()
+                        })
+                        .child("Choose the popup backend"),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(8.))
+                        .child(self.button(
+                            "backend-wayland".to_string(),
+                            wayland_label,
+                            selected_wayland,
+                            false,
+                            cx,
+                            |this, _, _, cx| this.select_backend("wayland", cx),
+                        ))
+                        .child(self.button(
+                            "backend-xwayland".to_string(),
+                            xwayland_label,
+                            selected_xwayland,
+                            false,
+                            cx,
+                            |this, _, _, cx| this.select_backend("xwayland", cx),
+                        )),
+                )
+                .child(
+                    div()
+                        .text_size(px(10.5))
+                        .text_color(if is_dark {
+                            theme::dark::text_tertiary()
+                        } else {
+                            theme::light::text_secondary()
+                        })
+                        .child(explanation),
+                )
+                .children(self.backend_choice_error.clone().map(|error| {
+                    self.status_card(
+                        "error",
+                        icons::ALERT_TRIANGLE,
+                        div().child(error).into_any_element(),
+                    )
+                }))
+                .into_any_element(),
+        )
     }
 
     fn render_permissions(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {

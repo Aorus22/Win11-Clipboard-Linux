@@ -4,7 +4,7 @@ Type=Application
 Name=Clipboard History (GPUI)
 GenericName=Clipboard Manager
 Comment=Windows 11-style clipboard history manager for Linux (GPUI native build)
-Exec=__BINDIR__/win11-clipboard-history-gpui
+Exec=__BINDIR__/win11-clipboard-history-gpui --no-tray
 Icon=win11-clipboard-history-gpui
 StartupWMClass=dev.gustavosett.clipboard-history-gpui
 Terminal=false
@@ -14,4 +14,4 @@ Actions=Settings;
 
 [Desktop Action Settings]
 Name=Open Clipboard Settings
-Exec=__BINDIR__/win11-clipboard-history-gpui --settings-open
+Exec=__BINDIR__/win11-clipboard-history-gpui --settings-open --no-tray

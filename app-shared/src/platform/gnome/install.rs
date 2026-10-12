@@ -51,6 +51,18 @@ pub fn is_installed() -> bool {
         && std::fs::read_to_string(dir.join("metadata.json")).is_ok_and(|s| s == METADATA)
 }
 
+/// Whether the extension is listed in `enabled-extensions` (the shell loads
+/// it at startup, so it is about to appear on the bus).
+pub fn is_enabled() -> bool {
+    gsettings(&["get", "org.gnome.shell", "enabled-extensions"])
+        .map(|raw| {
+            super::super::shortcuts::gnome::parse_path_list(&raw)
+                .iter()
+                .any(|u| u == UUID)
+        })
+        .unwrap_or(false)
+}
+
 /// Copy the extension into place and enable it.
 pub fn install() -> Result<Outcome, String> {
     let dir = extension_dir()?;

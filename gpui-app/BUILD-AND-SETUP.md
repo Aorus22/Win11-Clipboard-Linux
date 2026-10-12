@@ -138,11 +138,15 @@ Launch the app:
 
 The 5-step setup wizard opens automatically:
 
-1. **Permissions** — paste injection needs write access to `/dev/uinput`.
+1. **Display backend (Wayland sessions on GNOME/COSMIC)** — choose native
+   Wayland or XWayland compatibility. The choice is saved for later launches.
+   Native Wayland on GNOME installs the helper; log out and back in once if it
+   was not already active.
+2. **Permissions** — paste injection needs write access to `/dev/uinput`.
    Use the wizard's *Fix Permissions* (`pkexec setfacl`), or make it durable
    with the udev rule (`TAG+="uaccess"`) or `input` group membership.
    Check with: `getfacl /dev/uinput`.
-2. **Shortcut (GNOME)** — the wizard registers `<executable> --toggle` on
+3. **Shortcut (GNOME)** — the wizard registers `<executable> --toggle` on
    Super+V via gsettings, pointing at the AppImage path (never the transient
    `/tmp/.mount_...` path), so the binding survives reboots. Headless variant
    for scripts: `--register-shortcuts` / `--unregister-shortcuts`.
@@ -163,10 +167,10 @@ The 5-step setup wizard opens automatically:
    ```bash
    gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings
    ```
-3. **Autostart** — optional; writes
+4. **Autostart** — optional; writes
    `~/.config/autostart/win11-clipboard-history-gpui.desktop` with
    `--background` (tray-only at login).
-4. Done → the popup closes, the app stays resident in the tray.
+5. Done → the popup closes, the app stays resident in the tray.
 
 ### Tray icon on GNOME
 

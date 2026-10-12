@@ -36,17 +36,16 @@ pub fn reset_first_run() -> Result<(), String> {
 
 // --- Autostart (own entry) ---
 
-/// `--background` keeps the login start tray-only: no popup window is mapped,
-/// so nothing shows up in the dock until the user toggles it (aligns autostart
-/// with how the app is meant to live — in the background).
+/// `--background --no-tray` keeps the login start quiet: no popup window or
+/// status icon is mapped until the user toggles it.
 pub fn autostart_desktop_entry(exe_path: &str) -> String {
     let id = crate::identity::get();
     format!(
         "[Desktop Entry]\nType=Application\nName={}\n\
          Comment=Windows 11-style clipboard history daemon\n\
-         Exec={exe_path} --background\nIcon={}\n\
+         Exec={exe_path} --background --no-tray\nIcon={}\n\
          Terminal=false\nHidden=false\nNoDisplay=false\n\
-         X-GNOME-Autostart-enabled=true\nCategories=Utility;\n",
+         X-GNOME-Autostart-enabled=true\nX-GNOME-Autostart-Delay=5\nCategories=Utility;\n",
         id.display_name, id.binary_name
     )
 }

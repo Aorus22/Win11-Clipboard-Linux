@@ -4,7 +4,8 @@
 //! - Default: clipboard popup (360×480, ui_scale multiplies).
 //! - `--settings`: also open the settings window (480×520, decorated).
 //! - `--setup` or first run (own marker): wizard window (550×650) instead of popup.
-//! - `--background`: tray-only start (no popup until toggled).
+//! - `--background`: start without a popup until toggled.
+//! - `--no-tray`: don't register a status icon in the desktop panel.
 //! - `--toggle` / `--settings-open` / `--quit`: signal a running instance, exit fast.
 //! - `--version` / `-v`: print version.
 
@@ -570,7 +571,9 @@ fn main() {
     // Must run before the platform is initialized (and before anything caches
     // the session type) so the whole process agrees on the chosen backend.
     app_shared::identity::init(app_shared::identity::AppIdentity::GPUI);
-    platform::init();
+    let args: Vec<String> = std::env::args().collect();
+    let settings = settings::load();
+    platform::init_with_preference(Some(&settings.platform_backend));
 
     // The settings window reads the rendering environment (NVIDIA/AppImage
     // transparency note). The Tauri build initializes this at startup; without
@@ -578,7 +581,6 @@ fn main() {
     // took the whole resident app down.
     win11_clipboard_history_lib::rendering_env::init();
 
-    let args: Vec<String> = std::env::args().collect();
     if has_arg(&args, "--version") || has_arg(&args, "-v") {
         println!("win11-clipboard-history-gpui {}", env!("CARGO_PKG_VERSION"));
         return;
@@ -640,6 +642,7 @@ fn main() {
     let want_settings = has_arg(&args, "--settings");
     let want_setup = has_arg(&args, "--setup") || app_state::is_first_run();
     let background = has_arg(&args, "--background");
+    let no_tray = has_arg(&args, "--no-tray");
     // Verification aid: open a specific popup tab to exercise its render path.
     let initial_tab = match std::env::var("GPUI_SMOKE_TAB").as_deref() {
         Ok("emoji") => Tab::Emoji,
@@ -652,7 +655,6 @@ fn main() {
     // — and before the theme resolver, which reads the active GTK theme's colors.
     let gtk_ok = gtk_theme::init();
 
-    let settings = settings::load();
     let resolved = theme::resolve(&settings);
     // Warm the GTK palette cache even outside GTK mode so the Appearance card can
     // preview the desktop theme before the user picks it.
@@ -685,7 +687,8 @@ fn main() {
 
     // GTK is up (or not) at this point; the tray backend needs it and nothing else
     // runs a gtk main loop, so the poll loop below pumps its idle callbacks.
-    let mut tray = if gtk_ok {
+    // On native GNOME the helper extension already puts an icon in the top bar.
+    let mut tray = if gtk_ok && !no_tray && platform::backend().name() != "gnome" {
         let (dynamic_tray, dark) = {
             let guard = shared.lock();
             (guard.settings.enable_dynamic_tray_icon, guard.theme.is_dark)

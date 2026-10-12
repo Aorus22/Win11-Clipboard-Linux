@@ -18,6 +18,7 @@
 #
 # Both helper tools are downloaded (and cached) as AppImages and run with
 # `--appimage-extract-and-run`, so no FUSE/libfuse2 is required.
+# Set APPIMAGE_RUNTIME_FILE to a local type2 runtime for offline packaging.
 
 set -euo pipefail
 
@@ -95,7 +96,7 @@ rm -rf "$APP_DIR"
 install -Dm755 "$BIN" "$APP_DIR/usr/bin/$BIN_NAME"
 
 # Assets are read at runtime from <prefix>/share/win11-clipboard-history-gpui/assets
-install -Dm644 "$GPUI_DIR/assets/emojis.json" \
+install -Dm644 "$ROOT/app-shared/assets/emojis.json" \
     "$APP_DIR/usr/share/win11-clipboard-history-gpui/assets/emojis.json"
 cp -a "$GPUI_DIR/assets/icons" \
     "$APP_DIR/usr/share/win11-clipboard-history-gpui/assets/"
@@ -139,8 +140,13 @@ mkdir -p "$DIST_DIR"
 OUT="$DIST_DIR/$OUT_NAME"
 
 log "Packing $OUT_NAME (appimagetool)"
+PACK_ARGS=()
+if [[ -n "${APPIMAGE_RUNTIME_FILE:-}" ]]; then
+    [[ -f "$APPIMAGE_RUNTIME_FILE" ]] || fail "runtime missing: $APPIMAGE_RUNTIME_FILE"
+    PACK_ARGS+=(--runtime-file "$APPIMAGE_RUNTIME_FILE")
+fi
 ARCH="$ARCH" VERSION="$VERSION" \
-    run_appimage_tool "$CACHE_DIR/appimagetool-$ARCH.AppImage" "$APP_DIR" "$OUT"
+    run_appimage_tool "$CACHE_DIR/appimagetool-$ARCH.AppImage" "${PACK_ARGS[@]}" "$APP_DIR" "$OUT"
 chmod +x "$OUT"
 
 log "Done: $OUT"
@@ -180,12 +186,13 @@ if [[ "$INSTALL" == "1" ]]; then
 Type=Application
 Name=Win11 Clipboard History (GPUI)
 Comment=Windows 11-style clipboard history daemon
-Exec=$INSTALLED_APPIMAGE --background
+Exec=$INSTALLED_APPIMAGE --background --no-tray
 Icon=$BIN_NAME
 Terminal=false
 Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=5
 Categories=Utility;
 EOF
     chmod +x "$AUTOSTART_DIR/$BIN_NAME.desktop"

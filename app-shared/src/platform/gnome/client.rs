@@ -114,7 +114,9 @@ pub fn watch_outside_clicks(on_click: impl Fn()) -> Result<(), String> {
     let conn = Connection::session().map_err(|e| format!("session bus: {e}"))?;
     let rule = zbus::MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
-        .sender(BUS_NAME)
+        // The object path, interface, and member identify this helper signal.
+        // GDBus reports the emitting connection with a unique sender name.
+        .path(OBJECT_PATH)
         .map_err(|e| e.to_string())?
         .interface(INTERFACE)
         .map_err(|e| e.to_string())?

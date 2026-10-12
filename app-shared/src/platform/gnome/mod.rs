@@ -8,6 +8,9 @@
 //! only while the extension is actually running (see `platform::select`); the
 //! `x11` backend remains the fallback.
 
+use std::sync::OnceLock;
+use std::time::Duration;
+
 use super::{Capabilities, Hooks, PlatformBackend, PopupDrag};
 use crate::geometry::MonitorRect;
 
@@ -17,11 +20,39 @@ pub mod install;
 pub struct GnomeBackend;
 
 /// GNOME on a Wayland session with the helper extension running.
+///
+/// An autostarted daemon can outrun the shell: the extension is installed and
+/// enabled but has not taken its D-Bus name yet. Falling back to XWayland then
+/// would pin the popup to the unscaled X11 path for the whole session, so the
+/// background start waits a while for the extension. Other launches (shortcut
+/// clients, manual starts) never wait.
 pub(super) fn auto_selected() -> bool {
-    super::shortcuts::current_desktop() == super::shortcuts::Desktop::Gnome
-        && super::wayland_session()
-        && client::extension_ready()
+    static RESULT: OnceLock<bool> = OnceLock::new();
+    *RESULT.get_or_init(|| {
+        if super::shortcuts::current_desktop() != super::shortcuts::Desktop::Gnome
+            || !super::wayland_session()
+        {
+            return false;
+        }
+        if client::extension_ready() {
+            return true;
+        }
+        let autostart = std::env::args().any(|a| a == "--background");
+        if !(autostart && install::is_installed() && install::is_enabled()) {
+            return false;
+        }
+        eprintln!("[app] waiting for the GNOME extension to come up");
+        for _ in 0..EXTENSION_WAIT_TICKS {
+            std::thread::sleep(Duration::from_millis(250));
+            if client::extension_ready() {
+                return true;
+            }
+        }
+        false
+    })
 }
+
+const EXTENSION_WAIT_TICKS: u32 = 80; // 20 s
 
 impl PlatformBackend for GnomeBackend {
     fn name(&self) -> &'static str {
@@ -81,6 +112,7 @@ impl PlatformBackend for GnomeBackend {
             .spawn(move || {
                 let result = client::watch_outside_clicks(|| {
                     if hooks.popup_visible() {
+                        eprintln!("[app] GNOME extension reported outside click");
                         hooks.request_hide();
                     }
                 });
