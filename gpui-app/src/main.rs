@@ -7,7 +7,7 @@
 //! - `--background`: start without a popup until toggled.
 //! - `--no-tray`: don't register a status icon in the desktop panel.
 //! - `--toggle` / `--settings-open` / `--quit`: signal a running instance, exit fast.
-//! - `--version` / `-v`: print version.
+//! - `--version` / `-v`: print version. `--help` / `-h`: list every option.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -153,16 +153,22 @@ impl AssetSource for GpuiAssets {
 }
 
 /// Asset directory across the layouts we ship:
-/// 1. `$APPDIR/usr/share/...` — AppImage payload.
+/// 1. `$APPDIR/share/...` (sharun AppImage) or `$APPDIR/usr/share/...` (older
+///    linuxdeploy AppImage) — AppImage payload.
 /// 2. `<exe_dir>/../share/...` — installed PREFIX (AppImage `usr/bin` too).
 /// 3. `CARGO_MANIFEST_DIR/assets` — dev checkout (`cargo run`).
 /// 4. `/usr/share/...` — system install.
 fn assets_dir() -> PathBuf {
     const ASSETS_SUFFIX: &str = "share/win11-clipboard-history-gpui/assets";
     if let Some(appdir) = std::env::var_os("APPDIR").filter(|d| !d.is_empty()) {
-        let candidate = PathBuf::from(appdir).join("usr").join(ASSETS_SUFFIX);
-        if candidate.is_dir() {
-            return candidate;
+        let appdir = PathBuf::from(appdir);
+        for candidate in [
+            appdir.join(ASSETS_SUFFIX),
+            appdir.join("usr").join(ASSETS_SUFFIX),
+        ] {
+            if candidate.is_dir() {
+                return candidate;
+            }
         }
     }
     if let Some(dir) = std::env::current_exe()
@@ -567,11 +573,71 @@ fn has_arg(args: &[String], flag: &str) -> bool {
     args.iter().any(|a| a == flag)
 }
 
+const HELP: &str = "\
+Win11 Clipboard History (GPUI) — Windows 11-style clipboard history for Linux.
+
+USAGE:
+    {bin} [OPTIONS]
+
+With no option the app starts (first run opens the setup wizard) and shows the
+clipboard popup. If an instance is already running, the options below that
+signal it act on that instance instead.
+
+CONTROL A RUNNING INSTANCE (exit immediately):
+        --toggle              Show the popup, or hide it when it is open.
+                              This is what the Super+V desktop shortcut runs.
+        --settings-open       Open the Settings window.
+        --quit                Stop the running instance.
+
+START-UP:
+        --background          Start without showing the popup (autostart).
+        --no-tray             Do not register a status-bar icon.
+        --settings            Also open the Settings window at start.
+        --setup               Open the setup wizard even if it already ran.
+
+SETUP HELPERS (no window, exit when done):
+        --register-shortcuts       Register the Super+V / Ctrl+Alt+V shortcuts
+                                   in the desktop (GNOME / COSMIC).
+        --unregister-shortcuts     Remove those shortcuts.
+        --install-gnome-extension  Install and enable the GNOME Shell helper
+                                   extension (log out and in once afterwards).
+
+INFO:
+    -h, --help                Print this help.
+    -v, --version             Print the version.
+
+ENVIRONMENT:
+    WIN11_CLIPBOARD_BACKEND=x11|gnome|cosmic   Force the window backend
+                                               (default: detect the desktop).
+    WIN11_CLIPBOARD_BLUR=1                     Compositor blur behind the popup
+                                               on COSMIC (experimental).
+    WIN11_CLIPBOARD_DRAG_LOG=0|2               The debug trace in
+                                               ~/.config/win11-clipboard-history-gpui/drag-debug.log
+                                               is on by default; 0 turns it
+                                               off, 2 adds every drag step.
+
+Settings and history live in ~/.config/win11-clipboard-history-gpui/.
+";
+
 fn main() {
     // Must run before the platform is initialized (and before anything caches
     // the session type) so the whole process agrees on the chosen backend.
     app_shared::identity::init(app_shared::identity::AppIdentity::GPUI);
     let args: Vec<String> = std::env::args().collect();
+    if has_arg(&args, "--help") || has_arg(&args, "-h") {
+        // Before anything touches the display, settings or the platform: this
+        // must work over SSH and in a bare container.
+        let bin = std::env::var("APPIMAGE")
+            .ok()
+            .and_then(|path| {
+                std::path::Path::new(&path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "win11-clipboard-history-gpui".to_string());
+        print!("{}", HELP.replace("{bin}", &bin));
+        return;
+    }
     let settings = settings::load();
     platform::init_with_preference(Some(&settings.platform_backend));
 
