@@ -8,13 +8,14 @@
 use std::sync::Arc;
 
 use gpui::{
-    Context, FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseMoveEvent, MouseUpEvent,
-    Render, Window, div, prelude::*, px,
+    Context, FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseMoveEvent,
+    MouseUpEvent, Render, Tiling, Window, div, prelude::*, px,
 };
 use serde::{Deserialize, Serialize};
 
 use super::controls::{SliderId, TextField, slider, switch};
 use super::icons::{self, icon};
+use super::resize::{self, ResizeHover};
 use super::titlebar;
 use crate::app_state::{self, Shared};
 use crate::backend::BackendService;
@@ -48,6 +49,8 @@ pub struct SettingsState {
     pub backend: Arc<BackendService>,
     pub focus: FocusHandle,
     pub dragging: Option<SliderId>,
+    /// Window edge the pointer is over, so the resize cursor follows it.
+    pub resize_hover: ResizeHover,
     pub kaomoji_input: TextField,
     pub autodelete_input: TextField,
     pub maxhistory_input: TextField,
@@ -90,6 +93,7 @@ impl SettingsState {
             backend,
             focus,
             dragging: None,
+            resize_hover: ResizeHover::default(),
             kaomoji_input: TextField::new(kaomoji_focus),
             autodelete_input: TextField::with(auto_text, autodelete_focus),
             maxhistory_input: TextField::with(settings.max_history_size.to_string(), maxhistory_focus),
@@ -454,13 +458,22 @@ impl Render for SettingsState {
         let is_dark = self.is_dark();
         // Sessions where the compositor paints no title bar get ours (min/max/close).
         let client_chrome = titlebar::needs_client_chrome(window);
+        // Tell the compositor where the visible frame is (the margin is only
+        // our shadow). Constant on purpose: the backend drops it by itself on
+        // maximized/fullscreen/tiled edges, and changing it here would lag one
+        // configure behind.
+        window.set_client_inset(px(theme::WINDOW_SHADOW_MARGIN));
+        // Floating rounded frame with resize handles, or square and full-bleed
+        // when maximized, fullscreen or tiled.
+        let framed = resize::is_framed(window);
         // Transparent frame around the visible card: the shadow gpui paints into
         // it is this window's own (mutter draws none that follows the rounded
         // corners — see `theme::WINDOW_SHADOW_MARGIN`).
         div()
             .id("settings-frame")
+            .relative()
             .size_full()
-            .p(px(theme::WINDOW_SHADOW_MARGIN))
+            .when(framed, |frame| frame.p(px(theme::WINDOW_SHADOW_MARGIN)))
             .child(
                 div()
             .id("settings-root")
@@ -469,16 +482,18 @@ impl Render for SettingsState {
             .flex_col()
             .size_full()
             .overflow_hidden()
-            .shadow(theme::window_shadow())
             // Rounded window: the surface is ARGB, so the transparent corners
             // (and the 1px outline, which is all a shadow-less X11 window has to
             // separate itself from the desktop) read like a native GNOME app.
-            .rounded(px(theme::RADIUS_WINDOW))
-            .border_1()
-            .border_color(if is_dark {
-                theme::dark::border()
-            } else {
-                theme::light::border()
+            .when(framed, |card| {
+                card.shadow(theme::window_shadow())
+                    .rounded(px(theme::RADIUS_WINDOW))
+                    .border_1()
+                    .border_color(if is_dark {
+                        theme::dark::border()
+                    } else {
+                        theme::light::border()
+                    })
             })
             .bg(if is_dark {
                 theme::dark::bg_primary()
@@ -552,10 +567,10 @@ impl Render for SettingsState {
                             if this.dragging != Some(id) {
                                 return;
                             }
-                            let w = f32::from(window.bounds().size.width)
-                                - 2.0 * theme::WINDOW_SHADOW_MARGIN;
+                            let margin = resize::frame_margin(window);
+                            let w = f32::from(window.bounds().size.width) - 2.0 * margin;
                             let v = super::controls::slider_value_from_x(
-                                f32::from(event.position.x) - theme::WINDOW_SHADOW_MARGIN,
+                                f32::from(event.position.x) - margin,
                                 w,
                                 min,
                                 max,
@@ -598,6 +613,13 @@ impl Render for SettingsState {
                     .into_any_element()
             }))
             )
+            // Painted last = on top, on the true window edges (not the padded card).
+            .when(framed, |frame| {
+                frame.child(resize::resize_layer(
+                    Tiling::default(),
+                    self.resize_hover.clone(),
+                ))
+            })
     }
 }
 

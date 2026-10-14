@@ -96,7 +96,7 @@ pub fn slider(
     let frac = ((value - min) / (max - min)).clamp(0.0, 1.0);
     // The Settings card is inset inside the window by the CSD shadow margin, so
     // the window is that much wider than the surface the track is laid out in.
-    let win_w = f32::from(window.bounds().size.width) - 2.0 * theme::WINDOW_SHADOW_MARGIN;
+    let win_w = f32::from(window.bounds().size.width) - 2.0 * super::resize::frame_margin(window);
     let knob_x = frac * slider_track_w(win_w);
     // Shared by the down + move handlers (each `move` closure needs its own handle).
     let on_change = std::sync::Arc::new(on_change);
@@ -150,10 +150,10 @@ pub fn slider(
                         return;
                     }
                     this.dragging = Some(id);
-                    let w = f32::from(window.bounds().size.width)
-                        - 2.0 * theme::WINDOW_SHADOW_MARGIN;
+                    let margin = super::resize::frame_margin(window);
+                    let w = f32::from(window.bounds().size.width) - 2.0 * margin;
                     let v = slider_value_from_x(
-                        f32::from(event.position.x) - theme::WINDOW_SHADOW_MARGIN,
+                        f32::from(event.position.x) - margin,
                         w,
                         min,
                         max,
@@ -170,10 +170,10 @@ pub fn slider(
                 if this.dragging != Some(id) || disabled {
                     return;
                 }
-                let w = f32::from(window.bounds().size.width)
-                    - 2.0 * theme::WINDOW_SHADOW_MARGIN;
+                let margin = super::resize::frame_margin(window);
+                let w = f32::from(window.bounds().size.width) - 2.0 * margin;
                 let v = slider_value_from_x(
-                    f32::from(event.position.x) - theme::WINDOW_SHADOW_MARGIN,
+                    f32::from(event.position.x) - margin,
                     w,
                     min,
                     max,
