@@ -122,11 +122,18 @@ fn rgb_regex() -> &'static Regex {
     })
 }
 
+const SMART_ACTION_MAX_BYTES: usize = 8 * 1024;
+
 /// Mirrors `detectActions`: only plain `Text` content, whole-string matches.
 pub fn detect_smart_actions(item: &ClipboardItem) -> Vec<SmartAction> {
     let ClipboardContent::Text(text) = &item.content else {
         return Vec::new();
     };
+    // Runs on every render of every card: a URL/email/colour is never this
+    // long, and scanning a multi-megabyte clip each frame freezes the UI.
+    if text.len() > SMART_ACTION_MAX_BYTES {
+        return Vec::new();
+    }
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Vec::new();
@@ -221,6 +228,12 @@ mod tests {
         assert_eq!(relative_time(&h, &now), "3h ago");
         let d = now - chrono::Duration::days(2);
         assert_eq!(relative_time(&d, &now), d.format("%-m/%-d/%Y").to_string());
+    }
+
+    #[test]
+    fn smart_actions_skip_huge_text() {
+        let huge = ClipboardItem::new_text("a".repeat(13 * 1024 * 1024));
+        assert!(detect_smart_actions(&huge).is_empty());
     }
 
     #[test]

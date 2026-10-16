@@ -200,13 +200,28 @@ fn render_content(
         }))
 }
 
+/// The card only shows ~3 lines, so never hand the text system more than this
+/// many bytes: shaping a multi-megabyte string every frame hangs/crashes gpui.
+const CARD_TEXT_MAX_BYTES: usize = 600;
+
+fn card_text(text: &str) -> String {
+    if text.len() <= CARD_TEXT_MAX_BYTES {
+        return text.to_string();
+    }
+    let mut end = CARD_TEXT_MAX_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &text[..end])
+}
+
 fn render_text(text: &str, color: gpui::Rgba, compact: bool) -> impl IntoElement {
     div()
         .text_size(px(12.25))
         .text_color(color)
         .max_h(px(if compact { 18. } else { 52. }))
         .overflow_hidden()
-        .child(text.to_string())
+        .child(card_text(text))
 }
 
 fn render_image(
@@ -361,4 +376,18 @@ fn action_button(
         .hover(move |s| s.bg(hover_bg).text_color(hover_color))
         .on_click(cx.listener(on_click))
         .child(icon(icon_name, px(16.)).flex_shrink_0())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn card_text_caps_huge_and_respects_char_boundaries() {
+        assert_eq!(card_text("short"), "short");
+        let huge = "é".repeat(13 * 1024 * 1024 / 2);
+        let out = card_text(&huge);
+        assert!(out.len() <= CARD_TEXT_MAX_BYTES + '…'.len_utf8());
+        assert!(out.ends_with('…'));
+    }
 }
