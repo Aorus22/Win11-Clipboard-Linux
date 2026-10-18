@@ -157,3 +157,16 @@ show up in the dock — only the clipboard popup is hidden.
 Full deb/rpm bundles for the GPUI binary (AppImage + install flow only),
 release-LTO verification beyond `cargo check --profile=release`, shortcut
 auto-registration for DEs other than GNOME and COSMIC.
+
+## Releasing & in-app updates
+
+Settings → **About & Updates** → *Check for updates* reads GitHub's
+`/releases/latest` (manual only, no polling) and, when running from an
+AppImage (`$APPIMAGE`), downloads `win11-clipboard-history_<ver>_x86_64.AppImage`,
+verifies it against `SHA256SUMS.txt` and replaces itself.
+
+To release: bump `version` in `gpui-app/Cargo.toml`, run the
+`build-appimage` workflow with `tag=vX.Y.Z` and `publish=true`. Versioned tags
+are published as the "latest" release; the rolling `latest` tag is marked
+prerelease so the updater ignores it. Test against a mock server with
+`WIN11_CLIPBOARD_UPDATE_API=<url of release JSON>`.

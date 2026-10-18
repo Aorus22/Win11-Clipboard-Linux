@@ -154,15 +154,15 @@ jobs:
             TITLE="Win11 Clipboard - latest from main"
             # Rolling tag: create it on the first manual publish, then just
             # move the assets along on later ones.
-            CREATE_ARGS=(--target "${GITHUB_SHA}")
+            CREATE_ARGS=(--target "${GITHUB_SHA}" --prerelease)
           else
             TITLE="Win11 Clipboard For Linux ${TAG}"
             if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
               # The tag already exists, publish onto it.
-              CREATE_ARGS=(--verify-tag)
+              CREATE_ARGS=(--verify-tag --latest)
             else
               # Fresh versioned tag, created at this commit.
-              CREATE_ARGS=(--target "${GITHUB_SHA}")
+              CREATE_ARGS=(--target "${GITHUB_SHA}" --latest)
             fi
           fi
 
@@ -183,6 +183,13 @@ jobs:
           if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "${TAG}" "${APPIMAGE}" dist/SHA256SUMS.txt --repo "${GITHUB_REPOSITORY}" --clobber
             gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --title "${TITLE}" --notes-file notes.md
+            # The in-app updater reads /releases/latest: keep the rolling
+            # build a prerelease so only vX.Y.Z releases are offered.
+            if [[ "${TAG}" == "latest" ]]; then
+              gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --prerelease
+            else
+              gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --prerelease=false --latest
+            fi
           else
             gh release create "${TAG}" "${APPIMAGE}" dist/SHA256SUMS.txt \
               --repo "${GITHUB_REPOSITORY}" --title "${TITLE}" --notes-file notes.md "${CREATE_ARGS[@]}"

@@ -7692,7 +7692,7 @@ dependencies = [
 
 [[package]]
 name = "win11-clipboard-history-gpui"
-version = "0.9.4"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "app-shared",
@@ -7708,8 +7708,11 @@ dependencies = [
  "muda",
  "parking_lot",
  "regex",
+ "reqwest",
+ "semver",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tray-icon",
  "win11-clipboard-core",

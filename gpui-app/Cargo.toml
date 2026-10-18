@@ -1,10 +1,10 @@
 [package]
 name = "win11-clipboard-history-gpui"
-version = "0.9.4"
+version = "1.0.0"
 description = "Windows 11-style Clipboard History Manager for Linux — GPUI frontend (v0.8.0 milestone)"
 authors = ["gustavosett"]
 license = "MIT"
-repository = "https://github.com/gustavosett/Windows-11-Clipboard-History-For-Linux"
+repository = "https://github.com/Aorus22/Win11-Clipboard-Linux"
 edition = "2021"
 rust-version = "1.77"
 
@@ -42,6 +42,10 @@ futures-lite = "2"
 tokio = { version = "1", features = ["full"] }
 # GTK init for the AppIndicator tray backend (same stack the Tauri build uses).
 gtk = "0.18"
+# Manual "Check for updates" (GitHub Releases) — blocking client, same version/features as core.
+reqwest = { version = "0.13.3", features = ["blocking"] }
+semver = "1"
+sha2 = "0.10"
 
 # GPUI with the Wayland layer-shell / blur patches (public fork snapshot), pinned by rev.
 [patch.crates-io]

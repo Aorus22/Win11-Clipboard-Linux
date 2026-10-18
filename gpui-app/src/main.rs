@@ -26,6 +26,7 @@ mod theme;
 mod theme_watch;
 mod tray;
 mod ui;
+mod updater;
 
 use app_shared::{backend, drag_log, geometry, history, instance, pickers, platform, settings};
 use app_state::Shared;

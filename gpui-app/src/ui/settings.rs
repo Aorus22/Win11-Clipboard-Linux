@@ -5,7 +5,9 @@
 //! save behavior (immediate, except opacity/ui-scale sliders: live visual,
 //! commit on release).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{
     Context, FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseMoveEvent,
@@ -22,6 +24,7 @@ use crate::backend::BackendService;
 use crate::gtk_theme;
 use crate::settings::AppSettings;
 use crate::theme;
+use crate::updater::{self, InstallKind, UpdateInfo};
 use win11_clipboard_history_lib::rendering_env;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +47,18 @@ impl ThemeChoice {
     }
 }
 
+/// State of the manual "Check for updates" flow.
+#[derive(Debug, Clone)]
+pub enum UpdateStatus {
+    Idle,
+    Checking,
+    UpToDate,
+    Available(UpdateInfo),
+    Downloading(UpdateInfo),
+    ReadyToRestart,
+    Error(String),
+}
+
 pub struct SettingsState {
     pub shared: Shared,
     pub backend: Arc<BackendService>,
@@ -60,6 +75,9 @@ pub struct SettingsState {
     pub saved_flash: bool,
     pub save_error: Option<String>,
     pub shortcut_status: Option<Result<String, String>>,
+    pub update_status: UpdateStatus,
+    /// Download progress (bytes, total bytes; total 0 = unknown).
+    pub update_progress: Arc<(AtomicU64, AtomicU64)>,
     pub transparency_disabled: bool,
     pub transparency_reason: String,
     /// Scroll state of the settings content — drives its scrollbar
@@ -103,6 +121,8 @@ impl SettingsState {
             saved_flash: false,
             save_error: None,
             shortcut_status: None,
+            update_status: UpdateStatus::Idle,
+            update_progress: Arc::new((AtomicU64::new(0), AtomicU64::new(0))),
             transparency_disabled: env.transparency_disabled,
             transparency_reason: env.reason.clone(),
             scroll: gpui::ScrollHandle::new(),
@@ -541,6 +561,7 @@ impl Render for SettingsState {
                         .child(self.render_kaomoji(&settings, is_dark, window, cx))
                         .child(self.render_features(&settings, is_dark, cx))
                         .child(self.render_shortcuts(is_dark, cx))
+                        .child(self.render_about(is_dark, cx))
                         .child(self.render_reset(is_dark, cx)),
                     repaint,
                 )
@@ -1910,6 +1931,200 @@ impl SettingsState {
                                 .child("Register Shortkeys in System"),
                         ),
                 )
+                .into_any_element(),
+        )
+    }
+
+    fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.update_status, UpdateStatus::Checking | UpdateStatus::Downloading(_)) {
+            return;
+        }
+        self.update_status = UpdateStatus::Checking;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async { updater::check() })
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                s.update_status = match result {
+                    Ok(Some(info)) => UpdateStatus::Available(info),
+                    Ok(None) => UpdateStatus::UpToDate,
+                    Err(e) => UpdateStatus::Error(e),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn install_update(&mut self, info: UpdateInfo, cx: &mut Context<Self>) {
+        self.update_status = UpdateStatus::Downloading(info.clone());
+        self.update_progress.0.store(0, Ordering::Relaxed);
+        self.update_progress.1.store(0, Ordering::Relaxed);
+        cx.notify();
+        let progress = self.update_progress.clone();
+        let task = cx.background_executor().spawn(async move {
+            updater::download_and_install(&info, &progress.0, &progress.1)
+        });
+        cx.spawn(async move |this, cx| {
+            let mut task = task;
+            // Repaint the progress bar while the download runs.
+            let result = loop {
+                let tick = cx.background_executor().timer(Duration::from_millis(200));
+                match futures_lite::future::or(async { Some((&mut task).await) }, async {
+                    tick.await;
+                    None
+                })
+                .await
+                {
+                    Some(r) => break r,
+                    None => {
+                        if this.update(cx, |_, cx| cx.notify()).is_err() {
+                            return;
+                        }
+                    }
+                }
+            };
+            let _ = this.update(cx, |s, cx| {
+                s.update_status = match result {
+                    Ok(()) => UpdateStatus::ReadyToRestart,
+                    Err(e) => UpdateStatus::Error(e),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn restart_app(&mut self, cx: &mut Context<Self>) {
+        match updater::spawn_restart() {
+            Ok(()) => cx.quit(),
+            Err(e) => {
+                self.update_status = UpdateStatus::Error(e);
+                cx.notify();
+            }
+        }
+    }
+
+    fn render_about(&mut self, is_dark: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let muted = if is_dark { theme::gray::g400() } else { theme::gray::g500() };
+        let status = self.update_status.clone();
+        let appimage = matches!(updater::install_kind(), InstallKind::AppImage(_));
+
+        let (line, line_color): (String, gpui::Rgba) = match &status {
+            UpdateStatus::Idle => (String::new(), muted),
+            UpdateStatus::Checking => ("Checking for updates…".into(), muted),
+            UpdateStatus::UpToDate => ("You're up to date.".into(), muted),
+            UpdateStatus::Available(i) => (format!("Version {} is available.", i.version), muted),
+            UpdateStatus::Downloading(_) => {
+                let done = self.update_progress.0.load(Ordering::Relaxed);
+                let total = self.update_progress.1.load(Ordering::Relaxed);
+                let txt = if total > 0 {
+                    format!("Downloading… {}%", done * 100 / total)
+                } else {
+                    format!("Downloading… {:.1} MB", done as f64 / 1_048_576.0)
+                };
+                (txt, muted)
+            }
+            UpdateStatus::ReadyToRestart => ("Update installed. Restart to apply.".into(), muted),
+            UpdateStatus::Error(e) => (e.clone(), theme::tint::red500()),
+        };
+
+        let button = |id: &'static str, label: &'static str, primary: bool| {
+            div()
+                .id(id)
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.))
+                .px(px(16.))
+                .py(px(8.))
+                .rounded(px(8.))
+                .text_size(px(12.25))
+                .cursor_pointer()
+                .bg(if primary {
+                    theme::accent()
+                } else if is_dark {
+                    theme::white_pct(0.10)
+                } else {
+                    theme::gray::g200()
+                })
+                .text_color(if primary {
+                    theme::on_accent()
+                } else if is_dark {
+                    theme::gray::g200()
+                } else {
+                    theme::gray::g700()
+                })
+                .child(icon(icons::ROCKET, px(16.)).flex_shrink_0())
+                .child(label)
+        };
+
+        let mut actions = div().flex().flex_row().gap(px(8.));
+        let busy = matches!(status, UpdateStatus::Checking | UpdateStatus::Downloading(_));
+        if !busy && !matches!(status, UpdateStatus::ReadyToRestart) {
+            actions = actions.child(
+                button("update-check", "Check for updates", false)
+                    .on_click(cx.listener(|this, _, _, cx| this.check_for_updates(cx))),
+            );
+        }
+        if let UpdateStatus::Available(info) = &status {
+            if appimage && info.appimage_url.is_some() && info.sums_url.is_some() {
+                let i = info.clone();
+                actions = actions.child(
+                    button("update-install", "Update now", true)
+                        .on_click(cx.listener(move |this, _, _, cx| this.install_update(i.clone(), cx))),
+                );
+            }
+            let url = info.page_url.clone();
+            actions = actions.child(
+                button("update-open", "Release page", false)
+                    .on_click(cx.listener(move |_, _, _, _| {
+                        let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+                    })),
+            );
+        }
+        if matches!(status, UpdateStatus::ReadyToRestart) {
+            actions = actions.child(
+                button("update-restart", "Restart", true)
+                    .on_click(cx.listener(|this, _, _, cx| this.restart_app(cx))),
+            );
+        }
+
+        let mut body = div().p(px(24.)).flex().flex_col().gap(px(12.)).child(
+            div()
+                .text_size(px(12.25))
+                .text_color(muted)
+                .child(format!("Version {}", updater::CURRENT_VERSION)),
+        );
+        if !line.is_empty() {
+            body = body.child(div().text_size(px(12.25)).text_color(line_color).child(line));
+        }
+        if let UpdateStatus::Available(info) = &status {
+            if !appimage {
+                body = body.child(
+                    div()
+                        .text_size(px(10.5))
+                        .text_color(muted)
+                        .child("Not running from an AppImage — update with your package manager or download the release."),
+                );
+            }
+            let _ = info;
+        }
+        body = body.child(actions);
+
+        self.card(
+            is_dark,
+            div()
+                .flex()
+                .flex_col()
+                .child(self.section_title(
+                    is_dark,
+                    "About & Updates",
+                    "Check GitHub Releases for a newer version",
+                ))
+                .child(body)
                 .into_any_element(),
         )
     }
