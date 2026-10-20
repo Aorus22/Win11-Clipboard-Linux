@@ -104,31 +104,27 @@ with the wizard.
 
 ### Known issue: FUSE mounts of the Anylinux build
 
-The CI AppImage (quick-sharun "RunImage" + dwarfs) mounts itself through FUSE at
-a **fixed** path derived from the file. That layer can go away under the running
-process — observed on a 16G machine: dwarfs' block cache defaults to 1.5G, the
-allocation fails under memory pressure, dwarfs aborts (`SIGABRT`) and the mount
-dies. The app then faults on any page it had not touched yet (`SIGBUS`), and
-every later `<AppImage> --toggle` is refused outright:
+The CI AppImage (uruntime + dwarfs) mounts itself through FUSE at a **fixed** path
+derived from the file, and two of its defaults fight a *resident* daemon:
 
-```
-Failed to unmount: "/tmp/.mount_win11remp..."
-cannot safely inspect existing target directory ...; refusing reuse
-```
+| default | what it does | why it hurts here |
+|---|---|---|
+| `URUNTIME_MOUNT=3` | unmounts a shared mount after **5s without use** | this app maps the image once, then sits idle for hours; the mount goes away under it, the app SIGBUSes on the next page it has not touched yet, and every later `<AppImage> --toggle` is refused (`cannot safely inspect existing target directory … refusing reuse`) — Super+V dies with nothing on screen |
+| `DWARFS_CACHESIZE` (1.5G) | dwarfs block cache, allocated with `malloc` | under memory pressure the allocation fails, dwarfs aborts and takes the mount with it |
 
-which is what makes Super+V look dead with no window and no message.
+Both are now pinned **in the image** by `scripts/anylinux/make-appimage.sh`
+(`URUNTIME_MOUNT=0` via the documented `sed` on the runtime, `DWARFS_CACHESIZE=64M`
+via `--appimage-addenvs`), so they hold for launches we do not write ourselves
+too. Measured on the reporter's machine: the mount used to be gone 4-5s after
+start, and stayed up for 45s+ once pinned.
 
-Two independent mitigations, both already in place:
+Two further mitigations live in the app:
 
-- launch paths the app writes itself (autostart unit/entry and the Super+V
-  command) carry `APPIMAGE_EXTRACT_AND_RUN=1`, so they never touch FUSE — one
-  cached extraction, ~0.3s;
+- launch paths it writes itself (autostart unit/entry and the Super+V command)
+  carry `APPIMAGE_EXTRACT_AND_RUN=1`, so they never touch FUSE — measured 0.037s
+  per toggle against 0.182s for a FUSE mount, and immune to a dead mount;
 - `--toggle` starts an instance when the socket has no listener, so a daemon
   that did die is revived by the shortcut instead of leaving it dead.
-
-The proper fix belongs in the image: bake a small `DWARFS_CACHESIZE` (or a
-cache sized from the *runtime* machine) into the build instead of trusting the
-1.5G default.
 
 ## Platform backends (x11, gnome, cosmic)
 
