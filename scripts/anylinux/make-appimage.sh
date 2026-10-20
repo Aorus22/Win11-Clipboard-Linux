@@ -55,16 +55,20 @@ set -- "$OUTPATH"/*.AppImage
 FINAL="$OUTPATH/win11-clipboard-history_${VERSION}_${ARCH}.AppImage"
 [ "$1" = "$FINAL" ] || mv "$1" "$FINAL"
 
-# --- Runtime policy: a resident daemon needs a mount that stays ---------------
-# uruntime's default unmounts a shared FUSE mount after 5s without use
+# --- Runtime policy: mount for the app's lifetime, no longer ------------------
+# uruntime's default unmounts a shared FUSE mount after 5s *without use*
 # (URUNTIME_MOUNT=3). This app maps the image once and then sits idle for hours,
-# so the mount goes away under it: the app SIGBUSes on the next page it has not
-# touched yet, and every later `<AppImage> --toggle` is refused ("cannot safely
-# inspect existing target directory; refusing reuse") — Super+V goes dead with
-# nothing on screen to explain it. The values are single fixed-width digits, so
-# editing them in a finished image is documented (uruntime docs/CONFIGURATION.md).
-sed -i 's|URUNTIME_MOUNT=[0-9]|URUNTIME_MOUNT=0|' "$FINAL"
-grep -aq 'URUNTIME_MOUNT=0' "$FINAL" || { echo "could not pin URUNTIME_MOUNT" >&2; exit 1; }
+# so the mount went away under the running daemon: the app SIGBUSed on the next
+# page it had not touched yet, and every later `<AppImage> --toggle` was refused
+# ("cannot safely inspect existing target directory; refusing reuse") — Super+V
+# dead with nothing on screen to explain it. `1` (unmount once the application
+# exits) ties the mount to the process that needs it. Not `0`: that keeps it
+# mounted forever and leaves mounts and supervisors behind for one-shot runs such
+# as `--version`. Values are single fixed-width digits, so editing them in a
+# finished image is documented (uruntime docs/CONFIGURATION.md). Verified on a
+# real image: mount gone at 4-5s before, alive past 50s after.
+sed -i 's|URUNTIME_MOUNT=[0-9]|URUNTIME_MOUNT=1|' "$FINAL"
+grep -aq 'URUNTIME_MOUNT=1' "$FINAL" || { echo "could not pin URUNTIME_MOUNT" >&2; exit 1; }
 
 # DwarFS block cache: the runtime default (1.5G) is far more than this ~47M image
 # needs and is allocated with malloc, so under memory pressure the allocation

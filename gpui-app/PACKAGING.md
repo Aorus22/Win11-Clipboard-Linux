@@ -113,10 +113,13 @@ derived from the file, and two of its defaults fight a *resident* daemon:
 | `DWARFS_CACHESIZE` (1.5G) | dwarfs block cache, allocated with `malloc` | under memory pressure the allocation fails, dwarfs aborts and takes the mount with it |
 
 Both are now pinned **in the image** by `scripts/anylinux/make-appimage.sh`
-(`URUNTIME_MOUNT=0` via the documented `sed` on the runtime, `DWARFS_CACHESIZE=64M`
-via `--appimage-addenvs`), so they hold for launches we do not write ourselves
-too. Measured on the reporter's machine: the mount used to be gone 4-5s after
-start, and stayed up for 45s+ once pinned.
+(`URUNTIME_MOUNT=1`, the documented `sed` on the runtime, and
+`DWARFS_CACHESIZE=64M` via `--appimage-addenvs`), so they hold for launches we do
+not write ourselves too. `1` rather than `0` (keep mounted forever): it ties the
+mount to the app's lifetime — enough for a resident daemon — without leaving
+mounts and supervisors behind for one-shot runs like `--version`. Measured on the
+reporter's machine: the mount used to be gone 4-5s after start, and stayed up
+past 53s once pinned.
 
 Two further mitigations live in the app:
 
