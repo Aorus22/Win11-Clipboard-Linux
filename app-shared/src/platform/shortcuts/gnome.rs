@@ -2,8 +2,9 @@
 //!
 //! The backend's `register_global_shortcut()` prefers the installed Tauri
 //! wrapper and must NOT be reused (it would point Super+V at the Tauri app).
-//! These entries use `<exe> --toggle` and are matched by command substring, so
-//! Tauri-owned bindings are never touched (coexistence-safe).
+//! These entries use `<exe> --toggle` and are matched by their own dconf id and
+//! name (plus the command), so Tauri-owned bindings are never touched
+//! (coexistence-safe) while a renamed AppImage can still repair its own.
 
 use std::process::Command;
 
@@ -104,12 +105,28 @@ fn entry_set(path: &str, key: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Our entries are recognised by the binary name in the command — plus the
-/// exact launcher path, so a renamed AppImage still matches its own bindings.
-fn is_ours(path: &str) -> bool {
-    let command = entry_get(path, "command");
-    command.contains(entry_prefix())
+/// Ownership test on values already read out of dconf, so it stays unit-testable
+/// (the `is_ours` wrapper is the only part that needs a live session bus).
+///
+/// Three markers, in falling order of durability:
+/// - the dconf id we allocate (`<binary>-<slug>-<n>`) — survives a rename;
+/// - the entry's `name`, which comes from our identity, not from any path;
+/// - the command, the marker a foreign entry could share and the one that goes
+///   stale the moment the user renames the AppImage.
+///
+/// The command alone is not enough: a renamed AppImage used to lose ownership of
+/// its own bindings, so `register()` allocated a second entry for the same key
+/// instead of repairing the old one, and the stale entry — pointing at a file
+/// that no longer exists — kept grabbing `<Super>v`.
+fn owns(path: &str, name: &str, command: &str) -> bool {
+    path.contains(entry_prefix())
+        || bindings().iter().any(|(label, _, _)| name.contains(label))
+        || command.contains(entry_prefix())
         || command.contains(&crate::launcher::launcher_path())
+}
+
+fn is_ours(path: &str) -> bool {
+    owns(path, &entry_get(path, "name"), &entry_get(path, "command"))
 }
 
 /// Register both shortcuts. Idempotent: reuses our own entries, never touches
@@ -193,5 +210,50 @@ mod tests {
         let cmd = current_exe_toggle();
         assert!(cmd.ends_with(" --toggle"));
         assert!(!cmd.contains("win11-clipboard-history-bin"));
+    }
+
+    /// The regression: an entry registered before the AppImage was renamed must
+    /// still count as ours, otherwise `register()` duplicates the key instead of
+    /// repairing the stale command.
+    #[test]
+    fn ownership_survives_an_appimage_rename() {
+        // Same binding, dconf id we allocated, command pointing at a file that
+        // is gone. (The ids on this machine before the fix.)
+        let stale_id = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/win11-clipboard-history-gpui-clipboard-0/";
+        let stale_cmd = "'/home/u/Applications/win11-clipboard-history_0.9.3_x86_64.AppImage --toggle'";
+        assert!(owns(stale_id, "'Clipboard History (GPUI)'", stale_cmd));
+
+        // Legacy install: the entry lives under a user-chosen id (`customN`), so
+        // only its name still identifies it.
+        let id = crate::identity::get();
+        let legacy_id = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom1/";
+        assert!(owns(
+            legacy_id,
+            &format!("'{}'", id.shortcut_label),
+            "'/home/u/Applications/win11-clipboard-history-gpui_0.8.0_x86_64.AppImage --toggle'",
+        ));
+
+        // Fresh install: no marker yet, the command is still authoritative.
+        assert!(owns(
+            "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom9/",
+            "''",
+            "'/opt/win11-clipboard-history-gpui --toggle'",
+        ));
+    }
+
+    #[test]
+    fn foreign_entries_are_never_ours() {
+        // Someone else's shortcut.
+        assert!(!owns(
+            "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/",
+            "'Clean RAM Trim'",
+            "'/usr/local/bin/clean-ram-ui'",
+        ));
+        // The Tauri build's binding: its own name, its own command.
+        assert!(!owns(
+            "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom2/",
+            "'Clipboard History'",
+            "'/usr/bin/win11-clipboard-history --toggle'",
+        ));
     }
 }

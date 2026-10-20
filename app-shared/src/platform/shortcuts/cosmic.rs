@@ -111,11 +111,31 @@ fn split_entries(content: &str) -> Result<Vec<String>, String> {
     Ok(entries)
 }
 
-/// Our entries are recognised by the binary name in the Spawn command, plus
-/// the exact launcher path so a renamed AppImage still matches its own entries.
+/// Ownership test on one RON entry, from already-resolved identity values so it
+/// stays unit-testable.
+///
+/// COSMIC entries carry no id of ours (the binding *is* the key), so the durable
+/// marker is the `description`, which we always write from our identity labels.
+/// The `Spawn` command is the fallback — and the marker that goes stale when the
+/// user renames the AppImage, which used to make our own entries look foreign:
+/// `register()` then appended a second binding for the same key instead of
+/// repairing the existing one.
+fn owns(entry: &str, id: &crate::identity::AppIdentity, launcher: &str) -> bool {
+    entry.contains(id.shortcut_label)
+        || entry.contains(id.shortcut_label_alt)
+        || entry.contains(id.binary_name)
+        || entry.contains(launcher)
+}
+
+/// Our entries are recognised by the identity labels in their `description`, the
+/// binary name in the `Spawn` command, or the exact launcher path (so a renamed
+/// AppImage still matches its own entries).
 fn is_ours(entry: &str) -> bool {
-    entry.contains(crate::identity::get().binary_name)
-        || entry.contains(&crate::launcher::launcher_path())
+    owns(
+        entry,
+        crate::identity::get(),
+        &crate::launcher::launcher_path(),
+    )
 }
 
 fn render(entries: &[String]) -> String {
@@ -252,5 +272,34 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("modifiers: [Super], key: \"v\""));
         assert!(content.contains("modifiers: [Ctrl, Alt], key: \"v\""));
+    }
+
+    /// The regression: an entry written before the AppImage was renamed must
+    /// still be recognised, so `register()` repairs it instead of adding a second
+    /// binding for the same key.
+    #[test]
+    fn ownership_survives_an_appimage_rename() {
+        let id = crate::identity::get();
+        let launcher = "/home/u/Applications/win11-clipboard-history.AppImage";
+        let stale_cmd = "/home/u/Applications/win11-clipboard-history_0.9.3_x86_64.AppImage --toggle";
+        let stale = build_entry(id.shortcut_label, &["Super"], "v", stale_cmd);
+        assert!(owns(&stale, id, launcher));
+
+        // No description marker, command match only.
+        let cmd_only = build_entry("", &["Super"], "v", "/opt/win11-clipboard-history-gpui --toggle");
+        assert!(owns(&cmd_only, id, launcher));
+    }
+
+    #[test]
+    fn foreign_cosmic_entries_are_never_ours() {
+        let id = crate::identity::get();
+        let launcher = "/home/u/Applications/win11-clipboard-history.AppImage";
+        let foreign = r#"(modifiers: [Super], key: "t", description: None): Spawn("alacritty")"#;
+        assert!(!owns(foreign, id, launcher));
+
+        // The Tauri build's binding: its own label and its own command.
+        let tauri_cmd = "/usr/bin/win11-clipboard-history --toggle";
+        let tauri = build_entry("Clipboard History", &["Super"], "v", tauri_cmd);
+        assert!(!owns(&tauri, id, launcher));
     }
 }
