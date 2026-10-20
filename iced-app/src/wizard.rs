@@ -51,7 +51,7 @@ impl Default for State {
 
 /// The command a manual shortcut should run — always THIS binary.
 pub fn toggle_command() -> String {
-    format!("{} --toggle", app_shared::launcher::launcher_path())
+    format!("{} --toggle", app_shared::launcher::launch_command())
 }
 
 #[derive(Debug, Clone)]

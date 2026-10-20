@@ -27,6 +27,9 @@ const OBJECT_PATH = '/dev/gustavosett/ClipboardHistoryGpui/Shell';
 // Single-instance sockets of the two frontends (`$XDG_RUNTIME_DIR/<name>`);
 // writing a command word and a newline to one is what `<exe> --toggle` does.
 const SOCKETS = ['win11-clipboard-gpui.sock', 'win11-clipboard-iced.sock'];
+// Desktop entries the two frontends install (`<binary>.desktop`). The menu uses
+// them to start a frontend that is not running.
+const DESKTOP_IDS = ['win11-clipboard-history-gpui.desktop', 'win11-clipboard-history-iced.desktop'];
 // The popup is told apart from Settings/Setup (same app id) by its title.
 const POPUP_TITLE = 'Clipboard History Popup';
 
@@ -303,6 +306,11 @@ export default class ClipboardHelper extends Extension {
 
     // Same words `<exe> --toggle|--settings-open|--quit` send over the
     // single-instance socket.
+    //
+    // With nothing listening (a daemon that crashed, a session started without
+    // autostart) the menu used to do nothing at all, silently — the same dead
+    // end the desktop shortcut had before it learned to start an instance. So
+    // start the frontend instead, from its own desktop entry.
     _signalApp(word) {
         const runtime = GLib.get_user_runtime_dir();
         for (const name of SOCKETS) {
@@ -314,6 +322,27 @@ export default class ClipboardHelper extends Extension {
                 return;
             } catch (_) { /* that frontend is not running */ }
         }
+        // Nothing to stop when no daemon is left.
+        if (word === 'quit') return;
+        this._startFrontend(word === 'settings' ? 'settings' : null);
+    }
+
+    // `--toggle` shows the popup because the entry does; `settings` maps to the
+    // entry's own Settings action (`--settings-open`).
+    _startFrontend(action) {
+        for (const id of DESKTOP_IDS) {
+            const info = Gio.DesktopAppInfo.new(id);
+            if (!info) continue;
+            try {
+                const context = global.create_app_launch_context(0, -1);
+                if (action) info.launch_action(action, context);
+                else info.launch([], context);
+                return;
+            } catch (error) {
+                console.error(`[clipboard-history] could not start ${id}: ${error}`);
+            }
+        }
+        console.error('[clipboard-history] no instance running and no desktop entry to start one');
     }
 
     // ---- outside click -------------------------------------------------

@@ -175,7 +175,7 @@ pub fn update(state: &mut State, settings: &mut AppSettings, msg: Msg) -> Outcom
                 Some(result) => result.map(|_| "Shortcuts registered successfully!".to_string()),
                 None => Err(format!(
                     "Automatic registration supports GNOME and COSMIC. Bind Super+V to `{} --toggle` manually.",
-                    app_shared::launcher::launcher_path()
+                    app_shared::launcher::launch_command()
                 )),
             });
         }

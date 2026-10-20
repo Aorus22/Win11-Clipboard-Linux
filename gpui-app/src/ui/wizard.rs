@@ -24,9 +24,10 @@ use win11_clipboard_history_lib::{
 };
 
 /// Command shown/copied for manual shortcut setup — always THIS binary
-/// (AppImage-aware: resolves to the AppImage file, not its mount path).
+/// (AppImage-aware: resolves to the AppImage file, not its mount path, and
+/// prefixed so the launch skips the AppImage's FUSE mount).
 fn toggle_command() -> String {
-    format!("{} --toggle", crate::app_state::launcher_path())
+    format!("{} --toggle", crate::app_state::launch_command())
 }
 
 pub struct WizardState {

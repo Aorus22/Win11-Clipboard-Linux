@@ -147,4 +147,21 @@ mod tests {
         assert_eq!(list, ["a@b", UUID]);
         assert!(super::super::super::shortcuts::gnome::parse_path_list("@as []").is_empty());
     }
+
+    /// The top-bar menu must not be a dead end when no daemon is running: it
+    /// writes to the instance socket first, and then starts the frontend from
+    /// its own desktop entry.
+    #[test]
+    fn menu_starts_the_frontend_when_no_instance_listens() {
+        assert!(EXTENSION_JS.contains("_startFrontend("));
+        for binary in [
+            crate::identity::AppIdentity::GPUI.binary_name,
+            crate::identity::AppIdentity::ICED.binary_name,
+        ] {
+            let entry = format!("{binary}.desktop");
+            assert!(EXTENSION_JS.contains(&entry), "{entry} missing from extension.js");
+        }
+        // `quit` with nothing listening stays a no-op.
+        assert!(EXTENSION_JS.contains("if (word === 'quit') return;"));
+    }
 }

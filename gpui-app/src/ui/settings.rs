@@ -339,21 +339,17 @@ impl SettingsState {
 
     fn register_shortcuts(&mut self, cx: &mut Context<Self>) {
         // Synchronous (parity outcome; no spinner — the call blocks briefly).
-        // GNOME: own gpui-pathed registration. Elsewhere: manual instructions with
-        // our binary path (backend DE writers target the Tauri wrapper — not reused).
-        if crate::platform::shortcuts::current_desktop()
-            == crate::platform::shortcuts::Desktop::Gnome
-        {
-            self.shortcut_status = Some(
-                crate::platform::shortcuts::gnome::register()
-                    .map(|_| "Shortcuts registered successfully!".to_string()),
-            );
-        } else {
-            let exe = crate::app_state::launcher_path();
-            self.shortcut_status = Some(Err(format!(
-                "Automatic registration supports GNOME. Bind Super+V to `{exe} --toggle` manually."
-            )));
-        }
+        // Both desktops that have a writer go through the same entry point as
+        // `--register-shortcuts` (the Settings button used to call the GNOME one
+        // directly, so COSMIC only ever got manual instructions). `None` means
+        // this desktop has no writer and the user gets the steps by hand.
+        self.shortcut_status = Some(match crate::platform::shortcuts::register() {
+            Some(result) => result.map(|_| "Shortcuts registered successfully!".to_string()),
+            None => Err(format!(
+                "Automatic registration supports GNOME and COSMIC. Bind Super+V to `{} --toggle` manually.",
+                crate::app_state::launch_command()
+            )),
+        });
         cx.notify();
     }
 
