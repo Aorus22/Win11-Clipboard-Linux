@@ -40,10 +40,12 @@ fn gsettings(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// Resolves through `app_state::launcher_path()` so an AppImage registers the
-/// AppImage file, not the transient mount path `current_exe()` reports there.
+/// Resolves through `launcher::launch_command()` so an AppImage registers the
+/// AppImage file (not the transient mount path `current_exe()` reports there),
+/// prefixed to skip its FUSE mount — the shortcut has to work while the daemon
+/// holds that mount.
 pub(crate) fn current_exe_toggle() -> String {
-    format!("{} --toggle", crate::launcher::launcher_path())
+    format!("{} --toggle", crate::launcher::launch_command())
 }
 
 pub fn is_gnome() -> bool {

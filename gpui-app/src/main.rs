@@ -32,7 +32,7 @@ use app_shared::{backend, drag_log, geometry, history, instance, pickers, platfo
 use app_state::Shared;
 use backend::BackendService;
 use geometry::{MonitorRect, bottom_center, clamp_to_monitor};
-use instance::{AppSignal, InstanceRole};
+use instance::{AppSignal, ClientAction, InstanceRole};
 use ui::popup::{Popup, Tab};
 use ui::settings::SettingsState;
 use ui::wizard::WizardState;
@@ -587,7 +587,9 @@ signal it act on that instance instead.
 CONTROL A RUNNING INSTANCE (exit immediately):
         --toggle              Show the popup, or hide it when it is open.
                               This is what the Super+V desktop shortcut runs.
-        --settings-open       Open the Settings window.
+                              With no instance running it starts one instead.
+        --settings-open       Open the Settings window (also starts an
+                              instance when none is running).
         --quit                Stop the running instance.
 
 START-UP:
@@ -652,19 +654,33 @@ fn main() {
         println!("win11-clipboard-history-gpui {}", env!("CARGO_PKG_VERSION"));
         return;
     }
-    // Client modes: signal the running instance, then exit fast.
+    // Client modes: signal the running instance, then exit fast. When nothing
+    // answers — the daemon crashed, was killed, or this session never started it
+    // — `--toggle` and `--settings-open` fall through to a normal start and
+    // become the instance the user asked for. The desktop shortcut only runs
+    // this binary: exiting with "no running instance" there is invisible, so it
+    // used to leave Super+V dead until the app was opened by hand.
+    let mut settings_open = false;
     for (flag, signal) in [
         ("--toggle", AppSignal::Toggle),
         ("--settings-open", AppSignal::OpenSettings),
         ("--quit", AppSignal::Quit),
     ] {
-        if has_arg(&args, flag) {
-            match instance::send_signal(signal) {
-                Ok(()) => std::process::exit(0),
-                Err(e) => {
-                    eprintln!("[gpui-app] no running instance ({e})");
-                    std::process::exit(1);
-                }
+        if !has_arg(&args, flag) {
+            continue;
+        }
+        match instance::client_action(signal, instance::send_signal(signal)) {
+            ClientAction::Notified => std::process::exit(0),
+            ClientAction::NothingToDo => {
+                eprintln!("[gpui-app] {flag}: no running instance, nothing to do");
+                std::process::exit(0);
+            }
+            ClientAction::StartShowing => {
+                eprintln!("[gpui-app] {flag}: no running instance, starting one");
+            }
+            ClientAction::StartSettings => {
+                eprintln!("[gpui-app] {flag}: no running instance, starting one");
+                settings_open = true;
             }
         }
     }
@@ -706,7 +722,7 @@ fn main() {
         }
     }
 
-    let want_settings = has_arg(&args, "--settings");
+    let want_settings = has_arg(&args, "--settings") || settings_open;
     let want_setup = has_arg(&args, "--setup") || app_state::is_first_run();
     let background = has_arg(&args, "--background");
     let no_tray = has_arg(&args, "--no-tray");

@@ -98,7 +98,37 @@ backend (`libayatana-appindicator`) *is* bundled.
 
 `--install` copies the AppImage to `~/Applications`, writes a user desktop entry
 with an absolute `Exec` (so the `Settings` action works), and installs the
-icons. Autostart and the Super+V binding stay with the wizard.
+icons. Autostart (a systemd user unit with `Restart=on-failure`, or an XDG
+autostart entry where there is no user manager) and the Super+V binding stay
+with the wizard.
+
+### Known issue: FUSE mounts of the Anylinux build
+
+The CI AppImage (quick-sharun "RunImage" + dwarfs) mounts itself through FUSE at
+a **fixed** path derived from the file. That layer can go away under the running
+process — observed on a 16G machine: dwarfs' block cache defaults to 1.5G, the
+allocation fails under memory pressure, dwarfs aborts (`SIGABRT`) and the mount
+dies. The app then faults on any page it had not touched yet (`SIGBUS`), and
+every later `<AppImage> --toggle` is refused outright:
+
+```
+Failed to unmount: "/tmp/.mount_win11remp..."
+cannot safely inspect existing target directory ...; refusing reuse
+```
+
+which is what makes Super+V look dead with no window and no message.
+
+Two independent mitigations, both already in place:
+
+- launch paths the app writes itself (autostart unit/entry and the Super+V
+  command) carry `APPIMAGE_EXTRACT_AND_RUN=1`, so they never touch FUSE — one
+  cached extraction, ~0.3s;
+- `--toggle` starts an instance when the socket has no listener, so a daemon
+  that did die is revived by the shortcut instead of leaving it dead.
+
+The proper fix belongs in the image: bake a small `DWARFS_CACHESIZE` (or a
+cache sized from the *runtime* machine) into the build instead of trusting the
+1.5G default.
 
 ## Platform backends (x11, gnome, cosmic)
 

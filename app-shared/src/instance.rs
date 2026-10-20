@@ -98,6 +98,40 @@ pub fn acquire(tx: UnboundedSender<AppSignal>) -> InstanceRole {
     }
 }
 
+/// What a client-mode flag should do once the socket has answered (or not).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientAction {
+    /// A live instance took the signal: exit now.
+    Notified,
+    /// Nobody is listening — become the instance, showing the popup.
+    StartShowing,
+    /// Nobody is listening — become the instance, with Settings open.
+    StartSettings,
+    /// Nothing left to do (`--quit` with no daemon is already satisfied).
+    NothingToDo,
+}
+
+/// Decide the fate of `--toggle` / `--settings-open` / `--quit` from the result
+/// of [`send_signal`].
+///
+/// Falling through to a start is what keeps the desktop shortcut alive: the
+/// `<exe> --toggle` entry and the GNOME top-bar menu are the only entry points a
+/// user has, and a daemon that crashed, was killed, or never started (a session
+/// with autostart disabled) would otherwise turn both into silent no-ops.
+pub fn client_action(signal: AppSignal, delivered: Result<(), String>) -> ClientAction {
+    if delivered.is_ok() {
+        return ClientAction::Notified;
+    }
+    match signal {
+        AppSignal::Toggle => ClientAction::StartShowing,
+        AppSignal::OpenSettings => ClientAction::StartSettings,
+        // `--quit` with no listener: the daemon is already gone.
+        AppSignal::Quit => ClientAction::NothingToDo,
+        // Only ever sent from inside a running instance.
+        AppSignal::ThemeChanged => ClientAction::NothingToDo,
+    }
+}
+
 /// Send one signal word to the running primary. Used by `--toggle` client mode.
 pub fn send_signal(signal: AppSignal) -> Result<(), String> {
     let path = socket_path();
@@ -141,6 +175,30 @@ mod tests {
         assert_eq!(AppSignal::parse("settings"), Some(AppSignal::OpenSettings));
         assert_eq!(AppSignal::parse("quit"), Some(AppSignal::Quit));
         assert_eq!(AppSignal::parse("bogus"), None);
+    }
+
+    /// A delivered signal is always just "exit"; the fallbacks are what make a
+    /// dead daemon recoverable rather than a dead shortcut.
+    #[test]
+    fn client_modes_exit_when_delivered() {
+        for signal in [AppSignal::Toggle, AppSignal::OpenSettings, AppSignal::Quit] {
+            assert_eq!(client_action(signal, Ok(())), ClientAction::Notified);
+        }
+    }
+
+    #[test]
+    fn client_modes_start_an_instance_when_nobody_listens() {
+        let down = Err("connect: Connection refused".to_string());
+        assert_eq!(
+            client_action(AppSignal::Toggle, down.clone()),
+            ClientAction::StartShowing
+        );
+        assert_eq!(
+            client_action(AppSignal::OpenSettings, down.clone()),
+            ClientAction::StartSettings
+        );
+        // Nothing to stop, so this must not start a resident instance.
+        assert_eq!(client_action(AppSignal::Quit, down), ClientAction::NothingToDo);
     }
 
     /// Socket lifecycle in ONE test: the GPUI_SOCK_PATH override is process-global,
