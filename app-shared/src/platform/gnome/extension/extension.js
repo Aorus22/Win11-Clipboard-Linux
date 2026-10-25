@@ -176,10 +176,11 @@ export default class ClipboardHelper extends Extension {
             const alreadyHidden = win.is_skip_taskbar();
             if (!alreadyHidden) {
                 win.hide_from_window_list();
-                // Track the destroy handler id as the value; a window that
+                // Track the unmanaged handler id as the value; a window that
                 // closes (app quit/relaunch) drops its entry instead of
-                // lingering in the map until disable().
-                this._hiddenWindows.set(win, win.connect('destroy', () => {
+                // lingering in the map until disable(). Meta.Window has no
+                // 'destroy' signal — its teardown notification is 'unmanaged'.
+                this._hiddenWindows.set(win, win.connect('unmanaged', () => {
                     this._hiddenWindows.delete(win);
                 }));
             }
@@ -189,9 +190,9 @@ export default class ClipboardHelper extends Extension {
     }
 
     _restoreWindowLists() {
-        for (const [win, destroyId] of this._hiddenWindows) {
+        for (const [win, unmanagedId] of this._hiddenWindows) {
             try {
-                win.disconnect(destroyId);
+                win.disconnect(unmanagedId);
                 win.show_in_window_list();
             } catch (_) { /* window already closed */ }
         }
@@ -207,13 +208,13 @@ export default class ClipboardHelper extends Extension {
         this._createdId = global.display.connect('window-created', (_d, win) => {
             adopt(win);
             // The title may be set after the window object exists; the hook
-            // self-disconnects on the first change, and 'destroy' unhooks
-            // windows whose title never changes.
+            // self-disconnects on the first change, and 'unmanaged' unhooks
+            // windows whose title never changes (Meta.Window has no 'destroy').
             const titleId = win.connect('notify::title', () => {
                 win.disconnect(titleId);
                 adopt(win);
             });
-            win.connect('destroy', () => {
+            win.connect('unmanaged', () => {
                 try { win.disconnect(titleId); } catch (_) { /* already unhooked */ }
             });
         });
