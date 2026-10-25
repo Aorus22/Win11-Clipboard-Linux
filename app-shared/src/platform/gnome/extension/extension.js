@@ -176,7 +176,12 @@ export default class ClipboardHelper extends Extension {
             const alreadyHidden = win.is_skip_taskbar();
             if (!alreadyHidden) {
                 win.hide_from_window_list();
-                this._hiddenWindows.set(win, true);
+                // Track the destroy handler id as the value; a window that
+                // closes (app quit/relaunch) drops its entry instead of
+                // lingering in the map until disable().
+                this._hiddenWindows.set(win, win.connect('destroy', () => {
+                    this._hiddenWindows.delete(win);
+                }));
             }
         } catch (error) {
             console.error(`[clipboard-history] could not hide popup from taskbars: ${error}`);
@@ -184,8 +189,11 @@ export default class ClipboardHelper extends Extension {
     }
 
     _restoreWindowLists() {
-        for (const win of this._hiddenWindows.keys()) {
-            try { win.show_in_window_list(); } catch (_) { /* window already closed */ }
+        for (const [win, destroyId] of this._hiddenWindows) {
+            try {
+                win.disconnect(destroyId);
+                win.show_in_window_list();
+            } catch (_) { /* window already closed */ }
         }
         this._hiddenWindows.clear();
     }
@@ -198,10 +206,15 @@ export default class ClipboardHelper extends Extension {
         };
         this._createdId = global.display.connect('window-created', (_d, win) => {
             adopt(win);
-            // The title may be set after the window object exists.
-            const id = win.connect('notify::title', () => {
-                win.disconnect(id);
+            // The title may be set after the window object exists; the hook
+            // self-disconnects on the first change, and 'destroy' unhooks
+            // windows whose title never changes.
+            const titleId = win.connect('notify::title', () => {
+                win.disconnect(titleId);
                 adopt(win);
+            });
+            win.connect('destroy', () => {
+                try { win.disconnect(titleId); } catch (_) { /* already unhooked */ }
             });
         });
         this._mapId = global.window_manager.connect('map', (_wm, actor) => adopt(actor.meta_window));
