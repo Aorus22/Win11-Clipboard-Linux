@@ -122,8 +122,9 @@ pub struct Popup {
     /// list, rebuilt each frame from the filtered history.
     list_rows: Vec<ListRow>,
     /// Signature of [`Self::list_rows`] — the list state is reset (which
-    /// re-measures and returns to the top) only when this changes.
-    rows_signature: u64,
+    /// re-measures and returns to the top) only when this changes. `None`
+    /// until the first model is built.
+    rows_signature: Option<u64>,
     pub emoji_scroll: UniformListScrollHandle,
     pub kaomoji_scroll: UniformListScrollHandle,
     pub symbol_scroll: UniformListScrollHandle,
@@ -248,7 +249,7 @@ impl Popup {
             symbol_recents,
             list_state: ListState::new(0, ListAlignment::Top, px(600.)),
             list_rows: Vec::new(),
-            rows_signature: 0,
+            rows_signature: None,
             emoji_scroll: UniformListScrollHandle::default(),
             kaomoji_scroll: UniformListScrollHandle::default(),
             symbol_scroll: UniformListScrollHandle::default(),
@@ -1441,7 +1442,7 @@ impl Popup {
                 .into_any_element();
         }
         let rows = self.build_list_rows(&filtered);
-        let signature = rows_signature(&rows);
+        let signature = Some(rows_signature(&rows));
         if signature != self.rows_signature {
             // reset() returns the list to the top, so only reset when the row
             // model actually changed (new/removed/reordered rows, section
