@@ -8,8 +8,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Animation, AnimationExt, Context, FocusHandle, Focusable, KeyDownEvent, Pixels, Point, Render,
-    RenderImage, ScrollStrategy, UniformListScrollHandle, Window, div, point, prelude::*, px,
+    Animation, AnimationExt, Context, FocusHandle, Focusable, KeyDownEvent, ListAlignment,
+    ListOffset, ListState, Pixels, Point, Render, RenderImage, ScrollStrategy,
+    UniformListScrollHandle, Window, div, list, point, prelude::*, px,
 };
 use serde::{Deserialize, Serialize};
 
@@ -114,9 +115,15 @@ pub struct Popup {
     pub kaomoji: PickerTabState,
     pub symbol: PickerTabState,
     pub symbol_recents: Vec<SymbolItem>,
-    /// Scroll state of the clipboard list — drives its scrollbar (the pickers
-    /// carry their own handles inside `UniformListScrollHandle`).
-    pub list_scroll: gpui::ScrollHandle,
+    /// Virtualized clipboard list: state + row model + its signature (the
+    /// pickers carry their own handles inside `UniformListScrollHandle`).
+    pub list_state: ListState,
+    /// The current row model (section headers + cards) of the virtualized
+    /// list, rebuilt each frame from the filtered history.
+    list_rows: Vec<ListRow>,
+    /// Signature of [`Self::list_rows`] — the list state is reset (which
+    /// re-measures and returns to the top) only when this changes.
+    rows_signature: u64,
     pub emoji_scroll: UniformListScrollHandle,
     pub kaomoji_scroll: UniformListScrollHandle,
     pub symbol_scroll: UniformListScrollHandle,
@@ -136,6 +143,48 @@ pub struct Popup {
     focus_loss_armed_at: Option<Instant>,
     /// `Some` when the popup is an overlay card rather than a window.
     pub overlay: Option<OverlayCard>,
+}
+
+/// One row of the virtualized history list: a section header or a card.
+#[derive(Clone)]
+enum ListRow {
+    Header {
+        pinned: bool,
+        count: usize,
+        collapsed: bool,
+    },
+    Item {
+        /// Index into `Popup::items` for O(1) lookup at render time.
+        item_ix: usize,
+        /// Item id — part of the signature so a same-count replacement still
+        /// invalidates the cached row measurements.
+        id: String,
+        /// Card index used for focus highlighting (the `visible_items` index).
+        card_index: usize,
+    },
+}
+
+/// FNV fold over the row model — any change here means the list state must be
+/// reset (rows re-measured).
+fn rows_signature(rows: &[ListRow]) -> u64 {
+    use win11_clipboard_history_lib::clipboard_manager::calculate_hash;
+    let mut combined = rows.len() as u64;
+    for row in rows {
+        let row_hash = match row {
+            ListRow::Header {
+                pinned,
+                count,
+                collapsed,
+            } => calculate_hash(&("header", *pinned, *count, *collapsed)),
+            ListRow::Item {
+                item_ix,
+                id,
+                card_index,
+            } => calculate_hash(&("item", *item_ix, id.as_str(), *card_index)),
+        };
+        combined = combined.rotate_left(9) ^ row_hash;
+    }
+    combined
 }
 
 /// Grace between focus loss (pointer outside) and auto-dismissal. Long
@@ -197,7 +246,9 @@ impl Popup {
             kaomoji: PickerTabState::new(kaomoji_focus),
             symbol: PickerTabState::new(symbol_focus),
             symbol_recents,
-            list_scroll: gpui::ScrollHandle::default(),
+            list_state: ListState::new(0, ListAlignment::Top, px(600.)),
+            list_rows: Vec::new(),
+            rows_signature: 0,
             emoji_scroll: UniformListScrollHandle::default(),
             kaomoji_scroll: UniformListScrollHandle::default(),
             symbol_scroll: UniformListScrollHandle::default(),
@@ -216,6 +267,13 @@ impl Popup {
                 }),
         };
         this.sync_thumbs(cx);
+        // The scrollbar thumb is a plain sibling element: re-render the view
+        // on wheel scroll so it follows (drags repaint through their own path).
+        let scroll_entity = cx.entity();
+        this.list_state
+            .set_scroll_handler(move |_, _, cx| {
+                scroll_entity.update(cx, |_, cx| cx.notify());
+            });
         this
     }
 
@@ -593,8 +651,8 @@ impl Popup {
         self.reset_list_scroll_to_top();
     }
 
-    /// Map a `focused` index (into `visible_items()`) to the immediate child
-    /// index of the scroll container in `render_list` / `render_sections`.
+    /// Map a `focused` index (into `visible_items()`) to the row index of the
+    /// virtualized history list in `render_list`.
     ///
     /// The scroll container's children include the section headers, so the
     /// focused item is offset by them. Returns `None` when there is nothing
@@ -655,14 +713,17 @@ impl Popup {
     /// Minimal scroll so the focused history card is fully visible.
     /// Mirrors the web build's `scrollIntoView({ block: 'nearest' })`.
     pub(crate) fn scroll_to_focused(&self) {
-        if let Some(idx) = self.focused_scroll_index() {
-            self.list_scroll.scroll_to_item(idx);
+        if let Some(row) = self.focused_scroll_index() {
+            self.list_state.scroll_to_reveal_item(row);
         }
     }
 
     /// Jump back to the very top (used on filter reset / show / Home).
     pub(crate) fn reset_list_scroll_to_top(&self) {
-        self.list_scroll.scroll_to_top_of_item(0);
+        self.list_state.scroll_to(ListOffset {
+            item_ix: 0,
+            offset_in_item: px(0.),
+        });
     }
 
     pub fn save_ui_state(&self) {
@@ -1353,7 +1414,7 @@ impl Popup {
             .into_any_element()
     }
 
-    fn render_list(&self, window: &Window, cx: &mut Context<Popup>) -> gpui::AnyElement {
+    fn render_list(&mut self, window: &Window, cx: &mut Context<Popup>) -> gpui::AnyElement {
         let filtered = filter_history(&self.items, &self.search.text, self.search.regex_mode);
         if filtered.is_empty() {
             let secondary = if self.is_dark {
@@ -1377,119 +1438,151 @@ impl Popup {
                 })
                 .into_any_element();
         }
-        let show_sections = self.search.text.is_empty() && filtered.iter().any(|i| i.pinned);
-        let scroll = self.list_scroll.clone();
+        let rows = self.build_list_rows(&filtered);
+        let signature = rows_signature(&rows);
+        if signature != self.rows_signature {
+            // reset() returns the list to the top, so only reset when the row
+            // model actually changed (new/removed/reordered rows, section
+            // toggles) — not on unrelated re-renders.
+            self.rows_signature = signature;
+            self.list_state.reset(rows.len());
+        }
+        self.list_rows = rows;
         let repaint = {
             let entity = cx.entity();
             move |_window: &mut Window, cx: &mut gpui::App| {
                 entity.update(cx, |_, cx| cx.notify());
             }
         };
-        let list = div()
-            .id("history-list")
-            .flex_1()
-            .min_h(px(0.))
-            .overflow_y_scroll()
-            .track_scroll(&scroll)
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .p(px(12.))
-            .children(if show_sections {
-                self.render_sections(&filtered, window, cx)
-            } else {
-                filtered
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, item)| {
-                        render_history_item(
-                            item,
-                            &CardParams {
-                                index: idx,
-                                focused: idx == self.focused,
-                            },
-                            self,
-                            window,
-                            cx,
-                        )
-                        .into_any_element()
-                    })
-                    .collect::<Vec<_>>()
-            });
-        super::scrollbar::with_scrollbar("list-scrollbar", &scroll, self.is_dark, list, repaint)
-            .into_any_element()
+        let this = cx.entity();
+        let virtualized = list(self.list_state.clone(), move |row_ix, window, cx| {
+            this.update(cx, |popup, cx| {
+                popup.render_row(row_ix, window, cx).into_any_element()
+            })
+            .unwrap_or_else(|| div().into_any_element())
+        })
+        .flex_1()
+        .min_h(px(0.))
+        .p(px(12.));
+        super::scrollbar::with_list_scrollbar(
+            "list-scrollbar",
+            &self.list_state,
+            self.is_dark,
+            virtualized,
+            repaint,
+        )
+        .into_any_element()
     }
 
-    fn render_sections(
+    /// One row of the virtualized list: a section header or a history card.
+    ///
+    /// The row sequence mirrors the child order the old non-virtualized
+    /// container produced, so [`Self::clipboard_scroll_index`] still maps a
+    /// focused card to its row.
+    fn render_row(
         &self,
-        filtered: &[&ClipboardItem],
+        row_ix: usize,
         window: &Window,
         cx: &mut Context<Popup>,
-    ) -> Vec<gpui::AnyElement> {
-        let (mut pinned, mut unpinned): (Vec<&ClipboardItem>, Vec<&ClipboardItem>) =
-            (Vec::new(), Vec::new());
-        for item in filtered {
-            if item.pinned {
-                pinned.push(*item);
-            } else {
-                unpinned.push(*item);
+    ) -> gpui::AnyElement {
+        // Each row carries its own bottom gap — the old container was a
+        // flex column with `.gap(8.)`.
+        let row = match self.list_rows.get(row_ix) {
+            Some(row) => row,
+            None => return div().pb(px(8.)).into_any_element(),
+        };
+        let content = match row {
+            ListRow::Header {
+                pinned,
+                count,
+                collapsed,
+            } => {
+                if *pinned {
+                    render_section_header(self, 0, icons::PIN, "Pinned", *count, Some(*collapsed), cx)
+                } else {
+                    render_section_header(self, 1, icons::HISTORY, "Recent", *count, None, cx)
+                }
             }
+            ListRow::Item { item_ix, card_index, .. } => {
+                let Some(item) = self.items.get(*item_ix) else {
+                    return div().pb(px(8.)).into_any_element();
+                };
+                render_history_item(
+                    item,
+                    &CardParams {
+                        index: *card_index,
+                        focused: *card_index == self.focused,
+                    },
+                    self,
+                    window,
+                    cx,
+                )
+                .into_any_element()
+            }
+        };
+        div().pb(px(8.)).child(content).into_any_element()
+    }
+
+    /// Build the row model: mirrors `render_sections` — pinned header (+ cards
+    /// when expanded) then recent header + unpinned cards, or a flat list
+    /// while searching.
+    fn build_list_rows(&self, filtered: &[&ClipboardItem]) -> Vec<ListRow> {
+        let show_sections = self.search.text.is_empty() && filtered.iter().any(|i| i.pinned);
+        let mut rows = Vec::new();
+        if !show_sections {
+            for (card_index, item) in filtered.iter().enumerate() {
+                rows.push(ListRow::Item {
+                    item_ix: self.item_index(item),
+                    id: item.id.clone(),
+                    card_index,
+                });
+            }
+            return rows;
         }
-        let mut out = Vec::new();
-        out.push(render_section_header(
-            self,
-            0,
-            icons::PIN,
-            "Pinned",
-            pinned.len(),
-            Some(!self.pinned_expanded),
-            cx,
-        ));
+        let pinned_len = filtered.iter().filter(|i| i.pinned).count();
+        let unpinned_len = filtered.len() - pinned_len;
+        rows.push(ListRow::Header {
+            pinned: true,
+            count: pinned_len,
+            collapsed: !self.pinned_expanded,
+        });
         if self.pinned_expanded {
-            for (offset, item) in pinned.iter().enumerate() {
-                out.push(
-                    render_history_item(
-                        item,
-                        &CardParams {
-                            index: offset,
-                            focused: offset == self.focused,
-                        },
-                        self,
-                        window,
-                        cx,
-                    )
-                    .into_any_element(),
-                );
+            for (offset, item) in filtered.iter().take(pinned_len).enumerate() {
+                rows.push(ListRow::Item {
+                    item_ix: self.item_index(item),
+                    id: item.id.clone(),
+                    card_index: offset,
+                });
             }
         }
-        if !unpinned.is_empty() {
-            out.push(render_section_header(
-                self,
-                1,
-                icons::HISTORY,
-                "Recent",
-                unpinned.len(),
-                None,
-                cx,
-            ));
-            for (offset, item) in unpinned.iter().enumerate() {
-                let idx = pinned.len() + offset;
-                out.push(
-                    render_history_item(
-                        item,
-                        &CardParams {
-                            index: idx,
-                            focused: idx == self.focused,
-                        },
-                        self,
-                        window,
-                        cx,
-                    )
-                    .into_any_element(),
-                );
+        if unpinned_len > 0 {
+            rows.push(ListRow::Header {
+                pinned: false,
+                count: unpinned_len,
+                collapsed: false,
+            });
+            for (offset, item) in filtered.iter().skip(pinned_len).enumerate() {
+                rows.push(ListRow::Item {
+                    item_ix: self.item_index(item),
+                    id: item.id.clone(),
+                    card_index: if self.pinned_expanded {
+                        pinned_len + offset
+                    } else {
+                        offset
+                    },
+                });
             }
         }
-        out
+        rows
+    }
+
+    /// Position of a filtered item within `self.items` (filtered items are
+    /// references into it).
+    fn item_index(&self, item: &&ClipboardItem) -> usize {
+        self.items
+            .iter()
+            .position(|candidate| std::ptr::eq(candidate, *item))
+            .unwrap_or(0)
     }
 
     fn render_empty(&self, cx: &mut Context<Popup>) -> impl IntoElement {
