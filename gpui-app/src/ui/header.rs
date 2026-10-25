@@ -89,7 +89,7 @@ pub fn render_header(state: &Popup, count: usize, _window: &Window, cx: &mut Con
                         .opacity(if count == 0 { 0.5 } else { 1.0 })
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.backend.clear();
-                            this.refresh_items();
+                            this.refresh_items(cx);
                             this.focused = 0;
                             this.reset_list_scroll_to_top();
                             cx.notify();

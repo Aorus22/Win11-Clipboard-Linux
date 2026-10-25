@@ -3,23 +3,24 @@
 //! Owns all UI state. Backend mutations go through `BackendService`; the 500ms
 //! watcher thread bumps a version counter and the poll task refreshes the snapshot.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
     Animation, AnimationExt, Context, FocusHandle, Focusable, KeyDownEvent, Pixels, Point, Render,
-    ScrollStrategy, UniformListScrollHandle, Window, div, point, prelude::*, px,
+    RenderImage, ScrollStrategy, UniformListScrollHandle, Window, div, point, prelude::*, px,
 };
 use serde::{Deserialize, Serialize};
 
 use super::header::render_header;
-use super::history_item::{CardParams, render_history_item};
+use super::history_item::{CardParams, decode_thumb, render_history_item};
 use super::icons::{self, icon};
 use super::search::SearchState;
 use super::tabbar::render_tabbar;
 use crate::app_state::Shared;
 use crate::backend::BackendService;
-use crate::history::{ClipboardItem, filter_history};
+use crate::history::{ClipboardContent, ClipboardItem, filter_history};
 use crate::pickers::{Emoji, Kaomoji, SymbolItem};
 use crate::settings::{AppSettings, config_dir};
 use crate::theme;
@@ -98,6 +99,10 @@ pub struct Popup {
     pub settings: AppSettings,
     pub is_dark: bool,
     pub items: Vec<ClipboardItem>,
+    /// Decoded preview textures by item id. The app owns these `RenderImage`s
+    /// so their GPU atlas tiles can be freed via `drop_image` when the item
+    /// leaves history — GPUI itself never evicts atlas entries.
+    thumbs: HashMap<String, Arc<RenderImage>>,
     pub tab: Tab,
     pub search: SearchState,
     pub search_visible: bool,
@@ -174,12 +179,13 @@ impl Popup {
         let ui = load_ui_state();
         let symbol_recents = crate::pickers::load_recent_symbols();
         // Initial keyboard focus is set by main.rs after the window opens.
-        Self {
+        let mut this = Self {
             backend,
             shared,
             settings,
             is_dark,
             items,
+            thumbs: HashMap::new(),
             tab: initial_tab,
             search: SearchState::new(search_focus),
             search_visible: false,
@@ -208,7 +214,9 @@ impl Popup {
                     grab: None,
                     opened: Instant::now(),
                 }),
-        }
+        };
+        this.sync_thumbs(cx);
+        this
     }
 
     /// Ask the main loop to park the persistent window offscreen instead of
@@ -231,7 +239,7 @@ impl Popup {
     /// Reset per-open state for a fresh show: latest items, cleared search and
     /// selection, requested tab, and a new appear-animation generation.
     pub fn prepare_for_show(&mut self, tab: Tab, cx: &mut Context<Self>) {
-        self.refresh_items();
+        self.refresh_items(cx);
         self.search.clear();
         self.search_visible = false;
         self.focused = 0;
@@ -510,14 +518,73 @@ impl Popup {
         if !changed {
             return false;
         }
-        self.refresh_items();
+        self.refresh_items(cx);
         self.after_filter_change();
         cx.notify();
         true
     }
 
-    pub fn refresh_items(&mut self) {
+    pub fn refresh_items(&mut self, cx: &mut Context<Self>) {
         self.items = self.backend.snapshot();
+        self.sync_thumbs(cx);
+    }
+
+    /// Keep the preview-texture cache in step with the history snapshot:
+    /// decode thumbs for new items and free the GPU tiles of items that left
+    /// history (delete, clear, trimmed by the size limit, auto-delete).
+    fn sync_thumbs(&mut self, cx: &mut Context<Self>) {
+        let live: std::collections::HashSet<&str> = self
+            .items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect();
+        let stale_ids: Vec<String> = self
+            .thumbs
+            .keys()
+            .filter(|id| !live.contains(id.as_str()))
+            .cloned()
+            .collect();
+        if !stale_ids.is_empty() {
+            let stale: Vec<Arc<RenderImage>> = stale_ids
+                .iter()
+                .map(|id| self.thumbs.remove(id).expect("key just collected"))
+                .collect();
+            // drop_image only visits windows currently in `App.windows`; a
+            // window mid-update is temporarily taken out of that map, so free
+            // the tiles from a spawned task instead of the calling context.
+            // The upgrade guard keeps a shutdown race from panicking on the
+            // released app.
+            cx.spawn(async move |this, cx| {
+                if this.upgrade().is_none() {
+                    return;
+                }
+                cx.update(|cx| {
+                    for image in stale {
+                        cx.drop_image(image, None);
+                    }
+                });
+            })
+            .detach();
+        }
+        for item in &self.items {
+            if self.thumbs.contains_key(&item.id) {
+                continue;
+            }
+            let ClipboardContent::Image {
+                thumb: Some(thumb), ..
+            } = &item.content
+            else {
+                continue;
+            };
+            if let Some(render) = decode_thumb(thumb) {
+                self.thumbs.insert(item.id.clone(), render);
+            }
+        }
+    }
+
+    /// The decoded preview texture for a history card, if any.
+    pub fn thumb_for(&self, id: &str) -> Option<&Arc<RenderImage>> {
+        self.thumbs.get(id)
     }
 
     /// Mirror the React effect: reset focused index when filtered results change.
@@ -881,8 +948,8 @@ impl Popup {
     }
 
     pub fn paste_item_by_id(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(item) = self.backend.snapshot().iter().find(|i| i.id == id).cloned() else {
-            self.refresh_items();
+        let Some(item) = self.items.iter().find(|i| i.id == id).cloned() else {
+            self.refresh_items(cx);
             cx.notify();
             return;
         };
@@ -891,9 +958,9 @@ impl Popup {
         self.request_hide();
         let _ = focus_manager::restore_focused_window();
         if self.backend.paste(&item).is_err() {
-            self.refresh_items();
+            self.refresh_items(cx);
         } else {
-            self.refresh_items();
+            self.refresh_items(cx);
             self.after_filter_change();
         }
         let _ = window;
