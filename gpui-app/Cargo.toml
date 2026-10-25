@@ -1,6 +1,6 @@
 [package]
 name = "win11-clipboard-history-gpui"
-version = "1.0.5"
+version = "1.0.6"
 description = "Windows 11-style Clipboard History Manager for Linux — GPUI frontend (v0.8.0 milestone)"
 authors = ["gustavosett"]
 license = "MIT"
