@@ -991,6 +991,8 @@ impl ClipboardManager {
         let rgba = img.to_rgba8();
         let expected_bytes = rgba.into_raw();
 
+        // The closure must surface arboard errors itself; the String error the
+        // callers see travels as the inner result.
         with_thread_clipboard(|clipboard| {
             let image_data = ImageData {
                 width: width as usize,
@@ -998,19 +1000,21 @@ impl ClipboardManager {
                 bytes: expected_bytes.clone().into(),
             };
 
-            clipboard.set_image(image_data).map_err(|e| e.to_string())?;
+            let () = clipboard.set_image(image_data)?;
 
             // Reading through the same arboard instance performs the backend
             // round trip that confirms our provider owns and serves the selection.
-            let observed = clipboard.get_image().map_err(|e| e.to_string())?;
+            let observed = clipboard.get_image()?;
             if observed.width != width as usize
                 || observed.height != height as usize
                 || observed.bytes.as_ref() != expected_bytes.as_slice()
             {
-                return Err("Clipboard image verification returned different data".to_string());
+                return Ok(Err(
+                    "Clipboard image verification returned different data".to_string()
+                ));
             }
 
-            Ok(())
+            Ok(Ok(()))
         })
     }
 
@@ -1045,12 +1049,14 @@ impl ClipboardManager {
 
         // Fallback to arboard
         with_thread_clipboard(|clipboard| {
-            clipboard.set_text(text).map_err(|e| e.to_string())?;
-            let observed = clipboard.get_text().map_err(|e| e.to_string())?;
+            clipboard.set_text(text)?;
+            let observed = clipboard.get_text()?;
             if observed != text {
-                return Err("Clipboard text verification returned different data".to_string());
+                return Ok(Err(
+                    "Clipboard text verification returned different data".to_string()
+                ));
             }
-            Ok(())
+            Ok(Ok(()))
         })
     }
 
@@ -1080,14 +1086,14 @@ impl ClipboardManager {
 
         // Fallback to arboard (which handles multiple MIME types correctly)
         with_thread_clipboard(|clipboard| {
-            clipboard
-                .set_html(html, Some(plain))
-                .map_err(|e| e.to_string())?;
-            let observed = clipboard.get().html().map_err(|e| e.to_string())?;
+            clipboard.set_html(html, Some(plain))?;
+            let observed = clipboard.get().html()?;
             if observed != html {
-                return Err("Clipboard HTML verification returned different data".to_string());
+                return Ok(Err(
+                    "Clipboard HTML verification returned different data".to_string()
+                ));
             }
-            Ok(())
+            Ok(Ok(()))
         })
     }
 
