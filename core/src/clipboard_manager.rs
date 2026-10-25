@@ -6,10 +6,11 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::{DateTime, Utc};
 use image::{DynamicImage, ImageFormat};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -20,6 +21,10 @@ pub const DEFAULT_MAX_HISTORY_SIZE: usize = 50;
 const PREVIEW_TEXT_MAX_LEN: usize = 100;
 const GIF_CACHE_MARKER: &str = "win11-clipboard-history/gifs/";
 const FILE_URI_PREFIX: &str = "file://";
+/// Cards render image previews at ~96 px tall; a 2x-HiDPI fit box keeps the
+/// thumb sharp while staying ~100x smaller on the GPU than a full screenshot.
+const THUMB_MAX_W: u32 = 1024;
+const THUMB_MAX_H: u32 = 256;
 const CLIPBOARD_HELPER_READY_TIMEOUT: Duration = Duration::from_secs(2);
 const CLIPBOARD_HELPER_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
@@ -72,12 +77,60 @@ pub enum ClipboardContent {
     Text(String),
     /// Rich text with HTML formatting (plain text + optional HTML)
     RichText { plain: String, html: String },
-    /// Image as base64 encoded PNG
+    /// Image as PNG. The full-resolution PNG lives out-of-line in the images
+    /// directory (`path`, named after the item id); `thumb` is a small base64
+    /// PNG the UI renders from. `base64` only carries an inline copy for items
+    /// persisted by older versions (migrated to a file on load) or when the
+    /// images directory could not be written.
     Image {
-        base64: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base64: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thumb: Option<String>,
         width: u32,
         height: u32,
     },
+}
+
+impl ClipboardContent {
+    /// The path of the full-resolution PNG for an image item, when stored
+    /// out-of-line.
+    pub fn image_file(&self) -> Option<&str> {
+        match self {
+            ClipboardContent::Image {
+                path: Some(path), ..
+            } => Some(path),
+            _ => None,
+        }
+    }
+
+    /// Full-resolution PNG bytes for an image item: reads the out-of-line
+    /// file, falling back to the inline legacy copy when the file is gone.
+    /// `Ok(None)` means the item keeps its metadata but no pixel data survives.
+    pub fn image_png(&self) -> Result<Option<Vec<u8>>, String> {
+        match self {
+            ClipboardContent::Image { .. } => {
+                if let Some(path) = self.image_file() {
+                    match fs::read(path) {
+                        Ok(bytes) => return Ok(Some(bytes)),
+                        Err(e) => eprintln!("[ClipboardManager] image file unreadable: {e}"),
+                    }
+                }
+                match self {
+                    ClipboardContent::Image {
+                        base64: Some(b64), ..
+                    } => BASE64
+                        .decode(b64)
+                        .map(Some)
+                        .map_err(|e| format!("Base64 decode failed: {e}")),
+                    _ => Ok(None),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
 }
 
 /// A single clipboard history item
@@ -122,14 +175,16 @@ impl ClipboardItem {
         Self::create(ClipboardContent::RichText { plain, html }, preview)
     }
 
-    pub fn new_image(base64: String, width: u32, height: u32, hash: u64) -> Self {
+    pub fn new_image(thumb: Option<String>, width: u32, height: u32, hash: u64) -> Self {
         // We store the hash in the preview string to persist it across sessions
         // without breaking the serialization schema of existing data.
         let preview = format!("Image ({}x{}) #{}", width, height, hash);
 
         Self::create(
             ClipboardContent::Image {
-                base64,
+                path: None,
+                base64: None,
+                thumb,
                 width,
                 height,
             },
@@ -248,13 +303,17 @@ impl ClipboardManager {
 
                         pinned_items.extend(unpinned_items);
                         self.history = pinned_items;
-                        // Ensure loaded history respects configured limit immediately
+                        // Trim first so migrated storage is only written for
+                        // items that actually stay in history.
                         let history_trimmed = self.enforce_history_limit();
-                        // If the loaded history was trimmed, persist it so disk stays in sync.
-                        // Avoid saving when nothing changed.
-                        if history_trimmed {
+                        // Bring pre-thumbnail / inline-base64 items to the
+                        // current out-of-line storage.
+                        let storage_migrated = self.migrate_image_storage();
+                        // If anything changed, persist so disk stays in sync.
+                        if history_trimmed || storage_migrated {
                             self.save_history();
                         }
+                        self.gc_image_files();
                         // Initialize last_added_text_hash from the most recent item (even if pinned)
                         // This prevents duplication on startup if the clipboard content matches the top item
                         if let Some(first) = self.history.first() {
@@ -288,7 +347,14 @@ impl ClipboardManager {
                 if let Some(parent) = self.persistence_path.parent() {
                     let _ = fs::create_dir_all(parent);
                 }
-                if let Err(e) = fs::write(&self.persistence_path, content) {
+                // Atomic replace: a crash mid-write must not take the whole
+                // history with it.
+                let tmp = self.persistence_path.with_extension("json.tmp");
+                if let Err(e) = fs::write(&tmp, &content) {
+                    eprintln!("Failed to save history: {}", e);
+                    return;
+                }
+                if let Err(e) = fs::rename(&tmp, &self.persistence_path) {
                     eprintln!("Failed to save history: {}", e);
                 }
             }
@@ -375,17 +441,209 @@ impl ClipboardManager {
             return None;
         }
 
-        let base64_image = self.convert_image_to_base64(&image_data)?;
+        // Encode once: the full PNG goes to the images dir, a small preview
+        // travels with the item.
+        let png = Self::encode_image_png(&image_data)?;
+        let thumb = Self::make_thumb_base64(&image_data);
+        let width = image_data.width as u32;
+        let height = image_data.height as u32;
 
-        let item = ClipboardItem::new_image(
-            base64_image,
-            image_data.width as u32,
-            image_data.height as u32,
-            hash,
-        );
-
+        let mut item = ClipboardItem::new_image(thumb, width, height, hash);
+        self.attach_full_png(&mut item, &png);
         self.insert_item(item.clone());
         Some(item)
+    }
+
+    // --- Image storage (out-of-line full PNGs + inline thumbs) ---
+
+    /// Directory holding the full-resolution PNGs, next to history.json so
+    /// each frontend's data stays self-contained.
+    fn images_dir(&self) -> PathBuf {
+        self.persistence_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("images")
+    }
+
+    fn encode_image_png(image_data: &ImageData<'_>) -> Option<Vec<u8>> {
+        let img = DynamicImage::ImageRgba8(image::RgbaImage::from_raw(
+            image_data.width as u32,
+            image_data.height as u32,
+            image_data.bytes.to_vec(),
+        )?); // Returns None if dimensions don't match bytes
+
+        let mut buffer = Cursor::new(Vec::new());
+        img.write_to(&mut buffer, ImageFormat::Png).ok()?;
+        Some(buffer.into_inner())
+    }
+
+    /// Downscale to the preview fit box (never upscaled) and base64-encode.
+    fn make_thumb_base64(image_data: &ImageData<'_>) -> Option<String> {
+        let img = DynamicImage::ImageRgba8(image::RgbaImage::from_raw(
+            image_data.width as u32,
+            image_data.height as u32,
+            image_data.bytes.to_vec(),
+        )?);
+        Self::thumb_png_base64(&img)
+    }
+
+    /// Backfill path: build a thumb from already-encoded PNG bytes.
+    fn make_thumb_png_base64(png: &[u8]) -> Option<String> {
+        let img = image::load_from_memory(png).ok()?;
+        Self::thumb_png_base64(&img)
+    }
+
+    fn thumb_png_base64(img: &DynamicImage) -> Option<String> {
+        let thumb = if img.width() > THUMB_MAX_W || img.height() > THUMB_MAX_H {
+            img.thumbnail(THUMB_MAX_W, THUMB_MAX_H)
+        } else {
+            img.clone()
+        };
+        let mut buffer = Cursor::new(Vec::new());
+        thumb.write_to(&mut buffer, ImageFormat::Png).ok()?;
+        Some(BASE64.encode(buffer.into_inner()))
+    }
+
+    /// Store the full-resolution PNG for a freshly created image item.
+    /// Prefer the out-of-line file; if the images dir cannot be written, keep
+    /// the legacy inline base64 so the item still works.
+    fn attach_full_png(&self, item: &mut ClipboardItem, png: &[u8]) {
+        if let ClipboardContent::Image { path, base64, .. } = &mut item.content {
+            match Self::write_image_file(&self.images_dir(), &item.id, png) {
+                Ok(stored) => *path = Some(stored),
+                Err(e) => {
+                    eprintln!("[ClipboardManager] image file store failed, keeping inline: {e}");
+                    *base64 = Some(BASE64.encode(png));
+                }
+            }
+        }
+    }
+
+    /// Write an image file atomically (temp + rename) and return its path.
+    fn write_image_file(images_dir: &Path, id: &str, png: &[u8]) -> Result<String, String> {
+        fs::create_dir_all(images_dir).map_err(|e| format!("create images dir: {e}"))?;
+        let file = images_dir.join(format!("{id}.png"));
+        let tmp = images_dir.join(format!("{id}.png.tmp"));
+        fs::write(&tmp, png).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+        fs::rename(&tmp, &file).map_err(|e| format!("rename {}: {e}", file.display()))?;
+        Ok(file.to_string_lossy().into_owned())
+    }
+
+    /// Best-effort removal of the full-resolution PNG when an item leaves
+    /// history.
+    fn delete_image_file(item: &ClipboardItem) {
+        if let Some(path) = item.content.image_file() {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    /// Bring items persisted by older versions to the current storage: move
+    /// inline base64 PNGs into the images dir, restore files that vanished
+    /// while an inline copy still exists, drop redundant inline copies, and
+    /// backfill missing thumbnails. Returns true if anything changed.
+    fn migrate_image_storage(&mut self) -> bool {
+        let images_dir = self.images_dir();
+        let mut changed = false;
+        for item in &mut self.history {
+            let ClipboardContent::Image {
+                path,
+                base64,
+                thumb,
+                ..
+            } = &mut item.content
+            else {
+                continue;
+            };
+
+            // Inline legacy data -> out-of-line file.
+            if path.is_none() {
+                if let Some(b64) = base64.as_ref() {
+                    match BASE64.decode(b64) {
+                        Ok(png) => match Self::write_image_file(&images_dir, &item.id, &png) {
+                            Ok(stored) => {
+                                *path = Some(stored);
+                                *base64 = None;
+                                changed = true;
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "[ClipboardManager] image migration store failed, keeping inline: {e}"
+                                )
+                            }
+                        },
+                        Err(e) => eprintln!("[ClipboardManager] undecodable inline image: {e}"),
+                    }
+                }
+            }
+
+            if let Some(stored) = path.as_ref() {
+                if Path::new(stored).exists() {
+                    // Healthy: the inline copy (if any) is redundant.
+                    if base64.is_some() {
+                        *base64 = None;
+                        changed = true;
+                    }
+                } else if let Some(b64) = base64.as_ref() {
+                    // File vanished (crash between insert and save, manual
+                    // deletion) — restore it from the inline copy.
+                    if let Ok(png) = BASE64.decode(b64) {
+                        match Self::write_image_file(&images_dir, &item.id, &png) {
+                            Ok(restored) => {
+                                *path = Some(restored);
+                                changed = true;
+                            }
+                            Err(e) => eprintln!("[ClipboardManager] image restore failed: {e}"),
+                        }
+                    }
+                }
+            }
+
+            // Backfill the thumbnail for items persisted before thumbnails.
+            if thumb.is_none() {
+                let png = match (path.as_ref(), base64.as_ref()) {
+                    (Some(p), _) => fs::read(p).ok(),
+                    (None, Some(b64)) => BASE64.decode(b64).ok(),
+                    (None, None) => None,
+                };
+                if let Some(png) = png {
+                    if let Some(backfilled) = Self::make_thumb_png_base64(&png) {
+                        *thumb = Some(backfilled);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        changed
+    }
+
+    /// Delete image files no history item references (leftovers from crashes
+    /// between insert and save, or from items lost to a failed save).
+    fn gc_image_files(&self) {
+        let dir = self.images_dir();
+        let Ok(entries) = fs::read_dir(&dir) else {
+            return;
+        };
+        let referenced: HashSet<String> = self
+            .history
+            .iter()
+            .filter_map(|item| item.content.image_file())
+            .map(|p| {
+                Path::new(p)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let orphan = name.ends_with(".tmp")
+                || (name.ends_with(".png") && !referenced.contains(name.as_ref()));
+            if orphan {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
     }
 
     // --- State Management Helpers ---
@@ -463,20 +721,6 @@ impl ClipboardManager {
         }
     }
 
-    fn convert_image_to_base64(&self, image_data: &ImageData<'_>) -> Option<String> {
-        let img = DynamicImage::ImageRgba8(
-            image::RgbaImage::from_raw(
-                image_data.width as u32,
-                image_data.height as u32,
-                image_data.bytes.to_vec(),
-            )?, // Returns None if dimensions don't match bytes
-        );
-
-        let mut buffer = Cursor::new(Vec::new());
-        img.write_to(&mut buffer, ImageFormat::Png).ok()?;
-        Some(BASE64.encode(buffer.get_ref()))
-    }
-
     fn insert_item(&mut self, item: ClipboardItem) {
         // Insert after pinned items (first non-pinned slot)
         // If all items are pinned, insert at the end to preserve pinned ordering
@@ -498,7 +742,8 @@ impl ClipboardManager {
         while self.history.len() > self.max_history_size {
             // Remove from the end, skipping pinned items if possible
             if let Some(pos) = self.history.iter().rposition(|i| !i.pinned) {
-                self.history.remove(pos);
+                let removed = self.history.remove(pos);
+                Self::delete_image_file(&removed);
             } else {
                 // All items are pinned. We stopped removing to avoid deleting pins.
                 break;
@@ -518,13 +763,23 @@ impl ClipboardManager {
     }
 
     pub fn clear(&mut self) {
-        self.history.retain(|item| item.pinned);
+        self.history.retain(|item| {
+            if item.pinned {
+                true
+            } else {
+                Self::delete_image_file(item);
+                false
+            }
+        });
         self.save_history();
     }
 
     pub fn remove_item(&mut self, id: &str) {
-        self.history.retain(|item| item.id != id);
-        self.save_history();
+        if let Some(pos) = self.history.iter().position(|item| item.id == id) {
+            let removed = self.history.remove(pos);
+            Self::delete_image_file(&removed);
+            self.save_history();
+        }
     }
 
     pub fn toggle_pin(&mut self, id: &str) -> Option<ClipboardItem> {
@@ -598,6 +853,7 @@ impl ClipboardManager {
 
             if !keep {
                 changed = true;
+                Self::delete_image_file(item);
                 println!(
                     "[ClipboardManager] Auto-deleting old item: {} (age: {}s, limit: {}s)",
                     item.id, age_seconds, interval_seconds
@@ -654,12 +910,12 @@ impl ClipboardManager {
                 // Set HTML with plain text as fallback - this preserves formatting
                 self.set_html_robust(html, plain)?;
             }
-            ClipboardContent::Image {
-                base64,
-                width,
-                height,
-            } => {
-                self.set_image_robust(base64, *width, *height)?;
+            ClipboardContent::Image { width, height, .. } => {
+                let png = item
+                    .content
+                    .image_png()?
+                    .ok_or_else(|| "Image data is missing".to_string())?;
+                self.set_image_robust(&png, *width, *height)?;
             }
         }
 
@@ -672,16 +928,12 @@ impl ClipboardManager {
         Ok(())
     }
 
-    fn set_image_robust(&self, base64_str: &str, width: u32, height: u32) -> Result<(), String> {
-        let bytes = BASE64
-            .decode(base64_str)
-            .map_err(|e| format!("Base64 decode failed: {}", e))?;
-
+    fn set_image_robust(&self, png: &[u8], width: u32, height: u32) -> Result<(), String> {
         #[cfg(target_os = "linux")]
         {
             if crate::session::is_wayland() {
                 if self
-                    .set_clipboard_external("wl-copy", &["--type", "image/png"], &bytes)
+                    .set_clipboard_external("wl-copy", &["--type", "image/png"], png)
                     .is_ok()
                 {
                     return Ok(());
@@ -690,7 +942,7 @@ impl ClipboardManager {
                 .set_clipboard_external(
                     "xclip",
                     &["-selection", "clipboard", "-t", "image/png"],
-                    &bytes,
+                    png,
                 )
                 .is_ok()
             {
@@ -699,8 +951,7 @@ impl ClipboardManager {
         }
 
         let mut clipboard = get_system_clipboard()?;
-        let img =
-            image::load_from_memory(&bytes).map_err(|e| format!("Image load failed: {}", e))?;
+        let img = image::load_from_memory(png).map_err(|e| format!("Image load failed: {}", e))?;
         let rgba = img.to_rgba8();
         let expected_bytes = rgba.into_raw();
 
@@ -909,6 +1160,274 @@ fn wait_for_clipboard_helper_ready(
             Err(error) => {
                 return Err(format!("Failed to inspect {} status: {}", command, error));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tiny_png_base64() -> String {
+        let img = DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            2,
+            2,
+            image::Rgba([255, 0, 0, 255]),
+        ));
+        let mut buffer = Cursor::new(Vec::new());
+        img.write_to(&mut buffer, ImageFormat::Png).unwrap();
+        BASE64.encode(buffer.into_inner())
+    }
+
+    fn solid_image(w: usize, h: usize) -> ImageData<'static> {
+        ImageData {
+            width: w,
+            height: h,
+            bytes: vec![90u8; w * h * 4].into(),
+        }
+    }
+
+    fn manager_in(dir: &tempfile::TempDir) -> ClipboardManager {
+        ClipboardManager::new(dir.path().join("history.json"), 10)
+    }
+
+    fn png_dims(png: &[u8]) -> (u32, u32) {
+        let img = image::load_from_memory(png).unwrap();
+        (img.width(), img.height())
+    }
+
+    #[test]
+    fn legacy_inline_image_migrates_to_file_and_thumb() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = format!(
+            r#"[{{
+                "id": "legacy-1",
+                "content": {{ "type": "Image", "data": {{
+                    "base64": "{}", "width": 2, "height": 2 }} }},
+                "timestamp": "2026-01-01T00:00:00Z",
+                "pinned": false,
+                "preview": "Image (2x2) #1"
+            }}]"#,
+            tiny_png_base64()
+        );
+        fs::write(dir.path().join("history.json"), legacy).unwrap();
+
+        let manager = manager_in(&dir);
+        let item = &manager.history[0];
+        let path = item.content.image_file().expect("migrated to a file");
+        assert!(Path::new(path).exists());
+        let ClipboardContent::Image { base64, thumb, .. } = &item.content else {
+            panic!("not an image")
+        };
+        assert!(base64.is_none(), "inline copy moved out of the JSON");
+        assert!(thumb.is_some(), "thumbnail backfilled");
+
+        let png = item.content.image_png().unwrap().unwrap();
+        assert_eq!(png_dims(&png), (2, 2));
+    }
+
+    #[test]
+    fn new_items_store_full_png_out_of_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let (thumb, path, full_len) = {
+            let mut manager = manager_in(&dir);
+            let item = manager.add_image(solid_image(64, 32), 1).unwrap();
+            let ClipboardContent::Image {
+                path,
+                base64,
+                thumb,
+                ..
+            } = &item.content
+            else {
+                panic!("not an image")
+            };
+            let stored = path.clone().expect("file path set");
+            assert!(Path::new(&stored).exists());
+            assert!(base64.is_none(), "healthy disk write needs no inline copy");
+            let full_len = item.content.image_png().unwrap().unwrap().len();
+            (thumb.clone(), stored, full_len)
+        };
+
+        // Reload: storage and thumb survive verbatim, no re-encode.
+        let manager = manager_in(&dir);
+        let item = &manager.history[0];
+        assert_eq!(item.content.image_file(), Some(path.as_str()));
+        let ClipboardContent::Image {
+            thumb: reloaded_thumb,
+            ..
+        } = &item.content
+        else {
+            panic!("not an image")
+        };
+        assert_eq!(*reloaded_thumb, thumb);
+        assert_eq!(item.content.image_png().unwrap().unwrap().len(), full_len);
+    }
+
+    #[test]
+    fn thumb_is_downscaled_but_full_size_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = manager_in(&dir);
+        let item = manager.add_image(solid_image(1920, 1080), 2).unwrap();
+        assert_eq!(item_width(&item), 1920, "item keeps full dimensions");
+        assert_eq!(item_height(&item), 1080);
+
+        let thumb = item_thumb(&item).unwrap();
+        let png = BASE64.decode(thumb).unwrap();
+        let (tw, th) = png_dims(&png);
+        assert!(th <= 256 && tw <= 1024, "thumb fits the box: {tw}x{th}");
+        assert!(tw < 1920, "large image must be downscaled");
+        let aspect = tw as f32 / th as f32;
+        assert!(
+            (aspect - 1920.0 / 1080.0).abs() < 0.05,
+            "aspect preserved: {aspect}"
+        );
+    }
+
+    #[test]
+    fn small_images_are_not_upscaled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = manager_in(&dir);
+        let item = manager.add_image(solid_image(64, 32), 3).unwrap();
+        let thumb = item_thumb(&item).unwrap();
+        let png = BASE64.decode(thumb).unwrap();
+        assert_eq!(png_dims(&png), (64, 32));
+    }
+
+    #[test]
+    fn remove_item_deletes_its_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = manager_in(&dir);
+        let item = manager.add_image(solid_image(16, 16), 4).unwrap();
+        let path = item.content.image_file().unwrap().to_string();
+        manager.remove_item(&item.id);
+        assert!(!Path::new(&path).exists());
+        assert!(manager.history.is_empty());
+    }
+
+    #[test]
+    fn clear_keeps_pinned_file_and_deletes_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = manager_in(&dir);
+        let kept = manager.add_image(solid_image(16, 16), 5).unwrap();
+        let dropped = manager.add_image(solid_image(16, 16), 6).unwrap();
+        manager.toggle_pin(&kept.id);
+        manager.clear();
+
+        assert!(Path::new(kept.content.image_file().unwrap()).exists());
+        assert!(!Path::new(dropped.content.image_file().unwrap()).exists());
+        assert_eq!(manager.history.len(), 1);
+    }
+
+    #[test]
+    fn enforce_limit_trims_and_deletes_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.json");
+        let mut manager = ClipboardManager::new(path, 1);
+        let first = manager.add_image(solid_image(16, 16), 7).unwrap();
+        let second = manager.add_image(solid_image(16, 16), 8).unwrap();
+
+        assert_eq!(manager.history.len(), 1);
+        assert!(!Path::new(first.content.image_file().unwrap()).exists());
+        assert!(Path::new(second.content.image_file().unwrap()).exists());
+    }
+
+    #[test]
+    fn gc_removes_unreferenced_and_tmp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = manager_in(&dir);
+        let item = manager.add_image(solid_image(16, 16), 9).unwrap();
+        let images = dir.path().join("images");
+        fs::write(images.join("orphan.png"), b"not a real png").unwrap();
+        fs::write(images.join("half-written.png.tmp"), b"junk").unwrap();
+
+        // Reload runs the GC pass.
+        let manager = manager_in(&dir);
+        assert!(Path::new(item.content.image_file().unwrap()).exists());
+        assert!(!images.join("orphan.png").exists());
+        assert!(!images.join("half-written.png.tmp").exists());
+    }
+
+    #[test]
+    fn missing_file_is_restored_from_inline_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let new_format = format!(
+            r#"[{{
+                "id": "victim-1",
+                "content": {{ "type": "Image", "data": {{
+                    "path": "/nonexistent/images/victim-1.png",
+                    "base64": "{}", "width": 2, "height": 2 }} }},
+                "timestamp": "2026-01-01T00:00:00Z",
+                "pinned": false,
+                "preview": "Image (2x2) #1"
+            }}]"#,
+            tiny_png_base64()
+        );
+        fs::write(dir.path().join("history.json"), new_format).unwrap();
+
+        let manager = manager_in(&dir);
+        let item = &manager.history[0];
+        let restored = item.content.image_file().unwrap();
+        assert!(
+            restored.ends_with("victim-1.png") && Path::new(restored).exists(),
+            "file restored at {restored}"
+        );
+    }
+
+    #[test]
+    fn image_png_falls_back_to_inline_when_file_missing() {
+        let content = ClipboardContent::Image {
+            path: Some("/nonexistent/images/x.png".to_string()),
+            base64: Some(tiny_png_base64()),
+            thumb: None,
+            width: 2,
+            height: 2,
+        };
+        let png = content.image_png().unwrap().expect("inline fallback");
+        assert_eq!(png_dims(&png), (2, 2));
+    }
+
+    #[test]
+    fn image_with_no_surviving_data_stays_displayable() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = r#"[{
+                "id": "gone-1",
+                "content": { "type": "Image", "data": {
+                    "path": "/nonexistent/images/gone-1.png",
+                    "thumb": "aGk=", "width": 2, "height": 2 } },
+                "timestamp": "2026-01-01T00:00:00Z",
+                "pinned": false,
+                "preview": "Image (2x2) #1"
+            }]"#;
+        fs::write(dir.path().join("history.json"), json).unwrap();
+
+        let manager = manager_in(&dir);
+        assert_eq!(manager.history.len(), 1);
+        let item = &manager.history[0];
+        assert_eq!(item.content.image_png().unwrap(), None);
+        let ClipboardContent::Image { thumb, .. } = &item.content else {
+            panic!("not an image")
+        };
+        assert_eq!(thumb.as_deref(), Some("aGk="));
+    }
+
+    fn item_width(item: &ClipboardItem) -> u32 {
+        match &item.content {
+            ClipboardContent::Image { width, .. } => *width,
+            _ => panic!("not an image"),
+        }
+    }
+
+    fn item_height(item: &ClipboardItem) -> u32 {
+        match &item.content {
+            ClipboardContent::Image { height, .. } => *height,
+            _ => panic!("not an image"),
+        }
+    }
+
+    fn item_thumb(item: &ClipboardItem) -> Option<String> {
+        match &item.content {
+            ClipboardContent::Image { thumb, .. } => thumb.clone(),
+            _ => panic!("not an image"),
         }
     }
 }

@@ -50,3 +50,6 @@ libc = "0.2"
 # D-Bus for XDG Desktop Portal (theme detection for COSMIC and other DEs)
 zbus = { version = "5.15.0", default-features = false, features = ["tokio"] }
 futures-lite = "2"
+
+[dev-dependencies]
+tempfile = "3"

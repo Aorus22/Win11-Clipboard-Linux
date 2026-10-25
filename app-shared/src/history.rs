@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn filter_excludes_images() {
-        let img = BackendItem::new_image("AAAA".to_string(), 10, 10, 42);
+        let img = BackendItem::new_image(Some("AAAA".to_string()), 10, 10, 42);
         let items = vec![img, text_item("AAAA")];
         let hit = filter_history(&items, "AAAA", false);
         assert_eq!(hit.len(), 1);

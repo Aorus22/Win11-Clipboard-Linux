@@ -186,8 +186,8 @@ fn render_content(
             ClipboardContent::Image { .. } => None,
         })
         .children(match &item.content {
-            ClipboardContent::Image { base64, width, height } => {
-                Some(render_image(base64, *width, *height, compact, time_color))
+            ClipboardContent::Image { thumb, width, height } => {
+                Some(render_image(thumb.as_deref(), *width, *height, compact, time_color))
             }
             _ => None,
         })
@@ -225,7 +225,7 @@ fn render_text(text: &str, color: gpui::Rgba, compact: bool) -> impl IntoElement
 }
 
 fn render_image(
-    base64_data: &str,
+    thumb_base64: Option<&str>,
     width: u32,
     height: u32,
     compact: bool,
@@ -237,7 +237,7 @@ fn render_image(
             .text_color(dim)
             .child(format!("Image ({width}×{height})"));
     }
-    let thumb = decode_thumb(base64_data);
+    let thumb = thumb_base64.and_then(decode_thumb);
     let has_thumb = thumb.is_some();
     div().relative().child(
         div()
@@ -274,12 +274,12 @@ fn render_image(
     )
 }
 
-fn decode_thumb(base64_data: &str) -> Option<gpui::Image> {
+fn decode_thumb(thumb_base64: &str) -> Option<gpui::Image> {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
-        .decode(base64_data)
+        .decode(thumb_base64)
         .ok()?;
-    // Keep whatever PNG bytes the backend stored; the renderer decodes them.
+    // Small preview PNG; the full-resolution image stays on disk.
     Some(gpui::Image::from_bytes(gpui::ImageFormat::Png, bytes))
 }
 
