@@ -27,8 +27,8 @@ use std::rc::Rc;
 use std::cell::RefCell;
 
 use gpui::{
-    App, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollHandle, Window, div,
-    point, prelude::*, px,
+    App, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollHandle, Window,
+    div, point, prelude::*, px,
 };
 
 use crate::theme;
@@ -92,9 +92,7 @@ struct Metrics {
 }
 
 impl Metrics {
-    fn of(handle: &ScrollHandle) -> Self {
-        let viewport_h = f32::from(handle.bounds().size.height);
-        let max = f32::from(handle.max_offset().y).max(0.0);
+    fn from_parts(track_top: f32, viewport_h: f32, max: f32, scrolled: f32) -> Self {
         // The thumb is the viewport's share of the whole content, so the bar
         // reads as a map of the list.
         let thumb_h = if viewport_h > 0.0 && max > 0.0 {
@@ -103,13 +101,13 @@ impl Metrics {
             viewport_h
         };
         let travel = (viewport_h - thumb_h).max(0.0);
-        let scrolled = (-f32::from(handle.offset().y)).clamp(0.0, max);
+        let scrolled = scrolled.clamp(0.0, max.max(0.0));
         Self {
-            track_top: f32::from(handle.bounds().top()),
+            track_top,
             viewport_h,
             thumb_h,
             travel,
-            max,
+            max: max.max(0.0),
             thumb_top: if max > 0.0 {
                 scrolled / max * travel
             } else {
@@ -118,17 +116,46 @@ impl Metrics {
         }
     }
 
+    fn of(handle: &ScrollHandle) -> Self {
+        Self::from_parts(
+            f32::from(handle.bounds().top()),
+            f32::from(handle.bounds().size.height),
+            f32::from(handle.max_offset().y).max(0.0),
+            -f32::from(handle.offset().y),
+        )
+    }
+
+    /// Same geometry for a virtualized [`gpui::ListState`], via the scrollbar
+    /// accessors the element exposes for exactly this purpose.
+    fn of_list(state: &ListState) -> Self {
+        let bounds = state.viewport_bounds();
+        Self::from_parts(
+            f32::from(bounds.top()),
+            f32::from(bounds.size.height),
+            f32::from(state.max_offset_for_scrollbar().y),
+            -f32::from(state.scroll_px_offset_for_scrollbar().y),
+        )
+    }
+
     fn scrollable(&self) -> bool {
         self.max > 1.0 && self.travel > 0.0
     }
 
-    /// Move the scroll offset so the thumb's grab point sits at `pointer_y`.
-    fn scrub(&self, handle: &ScrollHandle, pointer_y: f32, grab: f32) {
+    /// The scroll offset (negative y, both handle conventions) that puts the
+    /// thumb's grab point at `pointer_y`, or `None` when not scrollable.
+    fn scrub_offset(&self, pointer_y: f32, grab: f32) -> Option<f32> {
         if !self.scrollable() {
-            return;
+            return None;
         }
         let frac = ((pointer_y - self.track_top - grab) / self.travel).clamp(0.0, 1.0);
-        handle.set_offset(point(px(0.), px(-frac * self.max)));
+        Some(-frac * self.max)
+    }
+
+    /// Move the scroll offset so the thumb's grab point sits at `pointer_y`.
+    fn scrub(&self, handle: &ScrollHandle, pointer_y: f32, grab: f32) {
+        if let Some(offset) = self.scrub_offset(pointer_y, grab) {
+            handle.set_offset(point(px(0.), px(offset)));
+        }
     }
 }
 
@@ -219,6 +246,120 @@ pub fn with_scrollbar(
                         })
                     });
                     m.scrub(&bar, y, grab);
+                    repaint(window, cx);
+                }
+            };
+            let on_move =
+                move |event: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
+                    scrub_active(f32::from(event.position.y), window, cx);
+                };
+            let on_up = move |_: &MouseUpEvent, window: &mut Window, cx: &mut App| {
+                end_drag(window, cx);
+            };
+            div()
+                .id(id)
+                .absolute()
+                .top(px(0.))
+                .bottom(px(0.))
+                .right(px(1.))
+                .w(px(HIT_W))
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, on_down)
+                .on_mouse_move(on_move)
+                .on_mouse_up(MouseButton::Left, on_up.clone())
+                .on_mouse_up_out(MouseButton::Left, on_up)
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(m.thumb_top))
+                        .right(px(0.))
+                        .h(px(m.thumb_h))
+                        .w(px(THUMB_W))
+                        .rounded(px(THUMB_RADIUS))
+                        .bg(thumb_color)
+                        .hover(move |style| style.bg(thumb_active)),
+                )
+                .into_any_element()
+        }))
+}
+
+/// Wrap a virtualized [`gpui::ListState`] scroll area so it gets the same
+/// vertical scrollbar. Mirrors [`with_scrollbar`], driven by the scrollbar
+/// accessors `ListState` exposes (`max_offset_for_scrollbar`,
+/// `set_offset_from_scrollbar`, …) plus its frozen-max drag bookkeeping.
+pub fn with_list_scrollbar(
+    id: &'static str,
+    state: &ListState,
+    is_dark: bool,
+    content: impl IntoElement,
+    repaint: impl Fn(&mut Window, &mut App) + Clone + 'static,
+) -> impl IntoElement {
+    let m = Metrics::of_list(state);
+    let dragging = DRAG.with(|drag| drag.borrow().as_ref().is_some_and(|drag| drag.id == id));
+    let (thumb_idle, thumb_active) = if is_dark {
+        (theme::white_pct(0.20), theme::white_pct(0.35))
+    } else {
+        (theme::black_pct(0.20), theme::black_pct(0.35))
+    };
+    let thumb_color = if dragging { thumb_active } else { thumb_idle };
+
+    let on_wrap_move = move |event: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
+        scrub_active(f32::from(event.position.y), window, cx);
+    };
+    let on_wrap_up = move |_: &MouseUpEvent, window: &mut Window, cx: &mut App| {
+        end_drag(window, cx);
+    };
+
+    div()
+        .relative()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_h(px(0.))
+        .on_mouse_move(on_wrap_move)
+        .on_mouse_up(MouseButton::Left, on_wrap_up.clone())
+        .on_mouse_up_out(MouseButton::Left, on_wrap_up)
+        .child(content)
+        .children(m.scrollable().then(|| {
+            let on_down = {
+                let repaint = repaint.clone();
+                move |event: &MouseDownEvent, window: &mut Window, cx: &mut App| {
+                    let y = f32::from(event.position.y);
+                    let in_thumb =
+                        y >= m.track_top + m.thumb_top && y <= m.track_top + m.thumb_top + m.thumb_h;
+                    let grab = if in_thumb {
+                        y - (m.track_top + m.thumb_top)
+                    } else {
+                        m.thumb_h * 0.5
+                    };
+                    // Freeze the max offset for the whole drag (the element's
+                    // own bookkeeping), then jump the thumb to the pointer.
+                    state.scrollbar_drag_started();
+                    let scrub_state = state.clone();
+                    let scrub_repaint = repaint.clone();
+                    let finish_state = state.clone();
+                    let finish_repaint = repaint.clone();
+                    DRAG.with(|drag| {
+                        *drag.borrow_mut() = Some(Drag {
+                            id,
+                            scrub: Rc::new(
+                                move |pointer_y: f32, window: &mut Window, cx: &mut App| {
+                                    if let Some(offset) = m.scrub_offset(pointer_y, grab) {
+                                        scrub_state
+                                            .set_offset_from_scrollbar(point(px(0.), px(offset)));
+                                    }
+                                    scrub_repaint(window, cx);
+                                },
+                            ),
+                            finish: Rc::new(move |window: &mut Window, cx: &mut App| {
+                                finish_state.scrollbar_drag_ended();
+                                finish_repaint(window, cx);
+                            }),
+                        })
+                    });
+                    if let Some(offset) = m.scrub_offset(y, grab) {
+                        state.set_offset_from_scrollbar(point(px(0.), px(offset)));
+                    }
                     repaint(window, cx);
                 }
             };
