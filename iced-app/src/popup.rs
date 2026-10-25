@@ -328,14 +328,15 @@ impl Popup {
     }
 
     fn thumb(&mut self, item: &ClipboardItem) -> Option<Handle> {
-        let ClipboardContent::Image { base64, .. } = &item.content else {
+        let ClipboardContent::Image { thumb, .. } = &item.content else {
             return None;
         };
+        let thumb = thumb.as_ref()?;
         self.thumbs
             .entry(item.id.clone())
             .or_insert_with(|| {
                 use base64::Engine;
-                let bytes = base64::engine::general_purpose::STANDARD.decode(base64).ok()?;
+                let bytes = base64::engine::general_purpose::STANDARD.decode(thumb).ok()?;
                 Some(Handle::from_bytes(bytes))
             })
             .clone()
