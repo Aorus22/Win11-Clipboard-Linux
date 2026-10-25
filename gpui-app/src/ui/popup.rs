@@ -1389,7 +1389,7 @@ impl Render for Popup {
 }
 
 impl Popup {
-    fn render_body(&self, window: &Window, cx: &mut Context<Popup>) -> gpui::AnyElement {
+    fn render_body(&mut self, window: &Window, cx: &mut Context<Popup>) -> gpui::AnyElement {
         if self.tab != Tab::Clipboard {
             return super::pickers::render_picker_tab(self, window, cx);
         }
@@ -1456,10 +1456,7 @@ impl Popup {
         };
         let this = cx.entity();
         let virtualized = list(self.list_state.clone(), move |row_ix, window, cx| {
-            this.update(cx, |popup, cx| {
-                popup.render_row(row_ix, window, cx).into_any_element()
-            })
-            .unwrap_or_else(|| div().into_any_element())
+            this.update(cx, |popup, cx| popup.render_row(row_ix, window, cx))
         })
         .flex_1()
         .min_h(px(0.))
