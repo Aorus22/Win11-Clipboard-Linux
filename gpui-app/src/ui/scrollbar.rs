@@ -294,7 +294,9 @@ pub fn with_list_scrollbar(
     content: impl IntoElement,
     repaint: impl Fn(&mut Window, &mut App) + Clone + 'static,
 ) -> impl IntoElement {
-    let m = Metrics::of_list(state);
+    // Own the handle: the event closures below must be 'static.
+    let state = state.clone();
+    let m = Metrics::of_list(&state);
     let dragging = DRAG.with(|drag| drag.borrow().as_ref().is_some_and(|drag| drag.id == id));
     let (thumb_idle, thumb_active) = if is_dark {
         (theme::white_pct(0.20), theme::white_pct(0.35))
