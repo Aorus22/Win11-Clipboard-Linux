@@ -14,17 +14,27 @@ name: Build AppImage
 # Arch/Alpine, CLI paths only: there is no display) -> publish (optional).
 #
 # Nothing here runs automatically. Invoke from the Actions tab ("Run workflow"):
-#   manual dispatch            -> build + smoke test, Actions artifact
-#   manual dispatch + publish  -> also publish to the given tag in Releases
-#   latest + publish   -> rolling release, stable download URL
-#   vX.Y.Z + publish   -> versioned release (tag is created if missing)
+#   beta channel (default)     -> rolling prerelease tagged `beta`, version
+#                                 X.Y.Z-beta.<run number> stamped onto the
+#                                 Cargo.toml copy on the runner. For manual
+#                                 testing only; the in-app updater reads
+#                                 /releases/latest and never offers a
+#                                 prerelease. Older beta assets are replaced.
+#   stable + publish latest    -> rolling release, stable download URL
+#   stable + publish vX.Y.Z    -> versioned release (tag is created if missing)
 
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Release tag to publish to (latest = rolling, vX.Y.Z = versioned)'
+      channel:
+        description: 'beta (rolling prerelease for testing) or stable (uses the tag input)'
         required: true
+        default: 'beta'
+        type: choice
+        options: [beta, stable]
+      tag:
+        description: 'stable only: Release tag to publish to (latest = rolling, vX.Y.Z = versioned)'
+        required: false
         default: 'latest'
       publish:
         description: 'Publish the built AppImage to Releases'
@@ -45,8 +55,22 @@ jobs:
     runs-on: ubuntu-latest
     container: ghcr.io/pkgforge-dev/archlinux:latest
     timeout-minutes: 120
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
 
     steps:
+      - name: Resolve channel
+        id: ch
+        run: |
+          echo "channel=${{ inputs.channel }}" >> "$GITHUB_OUTPUT"
+          # Beta trades a little runtime speed for a much shorter build: no LTO.
+          # Stable keeps the release profile from Cargo.toml. Set before the
+          # build so cargo sees it.
+          if [[ "${{ inputs.channel }}" == "beta" ]]; then
+            echo "CARGO_PROFILE_RELEASE_LTO=off" >> "$GITHUB_ENV"
+            echo "CARGO_PROFILE_RELEASE_DEBUG=0" >> "$GITHUB_ENV"
+          fi
+
       - name: Checkout
         uses: actions/checkout@v7
 
@@ -65,6 +89,25 @@ jobs:
 
       - name: Install dependencies
         run: /bin/sh scripts/anylinux/get-dependencies.sh
+
+      - name: Check version and stamp beta
+        id: ver
+        run: |
+          BASE="$(grep -m1 '^version' gpui-app/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+          if [[ "${{ inputs.channel }}" == "beta" ]]; then
+            # Only on the runner: the app shows this version via --version and
+            # the AppImage file name carries it. The local file is untouched.
+            VERSION="${BASE}-beta.${GITHUB_RUN_NUMBER}"
+            sed -i "0,/^version = \"${BASE}\"/s//version = \"${VERSION}\"/" gpui-app/Cargo.toml
+          else
+            VERSION="$BASE"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      # Fail fast (before the multi-minute AppImage build) and gate the release
+      # on the core crate's tests: storage schema, migration, GC, limits.
+      - name: Run core tests
+        run: cargo test --manifest-path core/Cargo.toml
 
       - name: Make AppImage
         run: /bin/sh scripts/anylinux/make-appimage.sh
@@ -135,6 +178,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
+          CHANNEL: ${{ inputs.channel }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
 
@@ -145,12 +190,44 @@ jobs:
           fi
 
           APPIMAGE="${APPIMAGES[0]}"
+          # The build job stamps the beta version onto its runner copy of
+          # Cargo.toml; this job checks out fresh, so the version must come
+          # from the build job's output.
+          TAG="$RELEASE_TAG"
 
-          VERSION="$(grep -m1 '^version' gpui-app/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+          if [[ "$CHANNEL" == "beta" ]]; then
+            TAG="beta"
+            TITLE="Win11 Clipboard beta"
+            {
+              echo "Beta build ${VERSION} from \`${GITHUB_SHA:0:7}\` (branch ${GITHUB_REF_NAME})."
+              echo
+              echo "For manual testing only. The in-app updater does not offer it."
+              echo
+              echo "Download:"
+              echo
+              echo '```bash'
+              echo "gh release download beta --repo ${GITHUB_REPOSITORY} --pattern '*.AppImage'"
+              echo '```'
+            } > notes.md
 
-          TAG="${RELEASE_TAG}"
+            if gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+              # Rolling prerelease: drop assets of earlier beta builds so only
+              # the newest remains.
+              gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name' | while read -r a; do
+                gh release delete-asset "$TAG" "$a" --repo "${GITHUB_REPOSITORY}" --yes
+              done
+              gh release upload "$TAG" "$APPIMAGE" dist/SHA256SUMS.txt --repo "${GITHUB_REPOSITORY}" --clobber
+              gh release edit "$TAG" --repo "${GITHUB_REPOSITORY}" --title "$TITLE" --notes-file notes.md --prerelease
+            else
+              gh release create "$TAG" "$APPIMAGE" dist/SHA256SUMS.txt \
+                --repo "${GITHUB_REPOSITORY}" --title "$TITLE" --notes-file notes.md \
+                --target "$GITHUB_SHA" --prerelease
+            fi
+            gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" --json url --jq .url
+            exit 0
+          fi
 
-          if [[ "${TAG}" == "latest" ]]; then
+          if [[ "$TAG" == "latest" ]]; then
             TITLE="Win11 Clipboard - latest from main"
             # Rolling tag: create it on the first manual publish, then just
             # move the assets along on later ones.
@@ -185,7 +262,7 @@ jobs:
             gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --title "${TITLE}" --notes-file notes.md
             # The in-app updater reads /releases/latest: keep the rolling
             # build a prerelease so only vX.Y.Z releases are offered.
-            if [[ "${TAG}" == "latest" ]]; then
+            if [[ "$TAG" == "latest" ]]; then
               gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --prerelease
             else
               gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --prerelease=false --latest
