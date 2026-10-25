@@ -150,12 +150,20 @@ impl BackendService {
                 let mut last_text_hash: Option<u64> = None;
                 let mut last_image_hash: Option<u64> = None;
                 let mut cleanup_counter = 0u32;
+                // Image-probe gate state: the tick counter (force-probe cadence)
+                // and what the last probe observed.
+                let mut probe_tick = 0u32;
+                let mut last_probe_text: Option<u64> = None;
+                let mut last_probe_owner: Option<u32> = None;
 
                 loop {
                     std::thread::sleep(Duration::from_millis(500));
                     cleanup_counter += 1;
+                    probe_tick = probe_tick.wrapping_add(1);
 
                     let mut manager = self.manager.lock();
+                    // Persist debounced insert-path writes (see SAVE_DEBOUNCE).
+                    manager.flush_pending_save();
 
                     if cleanup_counter >= 60 {
                         cleanup_counter = 0;
@@ -168,9 +176,11 @@ impl BackendService {
                         }
                     }
 
+                    let mut text_hash_now: Option<u64> = None;
                     if let Ok(text) = manager.get_current_text() {
                         if !text.is_empty() {
                             let hash = clipboard_manager::calculate_hash(&text);
+                            text_hash_now = Some(hash);
                             if Some(hash) != last_text_hash {
                                 last_text_hash = Some(hash);
                                 last_image_hash = None;
@@ -183,6 +193,24 @@ impl BackendService {
                             }
                         }
                     }
+
+                    // While an image sits on the clipboard, fetching it every
+                    // tick costs a full transfer (w*h*4). Skip the probe when
+                    // neither the text outcome nor the X11 selection owner
+                    // changed; force one every 4th tick (~2s) so same-window
+                    // recopies are still caught. Wayland (no owner) never skips.
+                    let owner = win11_clipboard_history_lib::paste_sync::clipboard_owner();
+                    let force = probe_tick % 4 == 0;
+                    if probe_tick > 1
+                        && !force
+                        && text_hash_now == last_probe_text
+                        && owner.is_some()
+                        && owner == last_probe_owner
+                    {
+                        continue;
+                    }
+                    last_probe_text = text_hash_now;
+                    last_probe_owner = owner;
 
                     if let Ok(Some((image_data, hash))) = manager.get_current_image() {
                         if Some(hash) != last_image_hash {

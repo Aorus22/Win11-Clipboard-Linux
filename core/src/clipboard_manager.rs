@@ -25,10 +25,36 @@ const FILE_URI_PREFIX: &str = "file://";
 /// thumb sharp while staying ~100x smaller on the GPU than a full screenshot.
 const THUMB_MAX_W: u32 = 1024;
 const THUMB_MAX_H: u32 = 256;
+/// Insert-path saves are debounced: the watcher flushes pending changes at
+/// most this often (explicit operations still save immediately).
+const SAVE_DEBOUNCE: Duration = Duration::from_secs(2);
 const CLIPBOARD_HELPER_READY_TIMEOUT: Duration = Duration::from_secs(2);
 const CLIPBOARD_HELPER_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 // --- Helper Functions ---
+
+thread_local! {
+    /// One arboard handle per thread. `Clipboard::new()` opens a fresh
+    /// connection on X11/Wayland — the watcher polls twice a second and paste
+    /// runs on the UI thread, so both reuse their thread's handle instead of
+    /// churning connections.
+    static THREAD_CLIPBOARD: std::cell::RefCell<Option<Clipboard>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with the calling thread's cached clipboard handle, creating it on
+/// first use.
+fn with_thread_clipboard<T>(
+    f: impl FnOnce(&mut Clipboard) -> Result<T, arboard::Error>,
+) -> Result<T, arboard::Error> {
+    THREAD_CLIPBOARD.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(Clipboard::new()?);
+        }
+        f(slot.as_mut().expect("slot just filled"))
+    })
+}
 
 // Simple FNV-1a implementation for stable hashing across restarts
 // This avoids the randomization of DefaultHasher which causes duplicates on restart
@@ -60,11 +86,6 @@ pub fn calculate_hash<T: Hash>(t: &T) -> u64 {
     let mut s = FnvHasher::default();
     t.hash(&mut s);
     s.finish()
-}
-
-/// Helper to get a fresh clipboard instance.
-fn get_system_clipboard() -> Result<Clipboard, String> {
-    Clipboard::new().map_err(|e| e.to_string())
 }
 
 // --- Data Structures ---
@@ -229,6 +250,9 @@ pub struct ClipboardManager {
     persistence_path: PathBuf,
     /// Maximum number of history items to keep
     max_history_size: usize,
+    /// Set by the insert path; [`Self::flush_pending_save`] persists after
+    /// [`SAVE_DEBOUNCE`], and Drop persists on shutdown.
+    dirty_since: Option<Instant>,
 }
 
 impl ClipboardManager {
@@ -250,6 +274,7 @@ impl ClipboardManager {
             last_added_text_hash: None,
             persistence_path,
             max_history_size: max_size,
+            dirty_since: None,
         };
         manager.load_history();
         manager
@@ -341,7 +366,7 @@ impl ClipboardManager {
         }
     }
 
-    pub fn save_history(&self) {
+    pub fn save_history(&mut self) {
         match serde_json::to_string_pretty(&self.history) {
             Ok(content) => {
                 if let Some(parent) = self.persistence_path.parent() {
@@ -357,8 +382,18 @@ impl ClipboardManager {
                 if let Err(e) = fs::rename(&tmp, &self.persistence_path) {
                     eprintln!("Failed to save history: {}", e);
                 }
+                self.dirty_since = None;
             }
             Err(e) => eprintln!("Failed to serialize history: {}", e),
+        }
+    }
+
+    /// Persist pending insert-path changes once [`SAVE_DEBOUNCE`] has elapsed.
+    /// Called from the watcher tick; explicit operations save immediately.
+    pub fn flush_pending_save(&mut self) {
+        match self.dirty_since {
+            Some(when) if when.elapsed() >= SAVE_DEBOUNCE => self.save_history(),
+            _ => {}
         }
     }
 
@@ -367,33 +402,34 @@ impl ClipboardManager {
     pub fn get_current_text(&mut self) -> Result<String, arboard::Error> {
         // We unwrap internal map error because arboard::Error is the expected return type here
         // for the monitoring loop in main.rs
-        Clipboard::new()?.get_text()
+        with_thread_clipboard(|clipboard| clipboard.get_text())
     }
 
     /// Try to get HTML content from clipboard. Returns None if not available.
     pub fn get_current_html(&self) -> Option<String> {
-        let mut clipboard = get_system_clipboard().ok()?;
-        clipboard.get().html().ok()
+        with_thread_clipboard(|clipboard| Ok(clipboard.get().html().ok()))
+            .ok()
+            .flatten()
     }
 
     pub fn get_current_image(
         &mut self,
     ) -> Result<Option<(ImageData<'static>, u64)>, arboard::Error> {
-        let mut clipboard = Clipboard::new()?;
-
-        match clipboard.get_image() {
-            Ok(image) => {
-                let hash = calculate_hash(&image.bytes);
-                let owned = ImageData {
-                    width: image.width,
-                    height: image.height,
-                    bytes: image.bytes.into_owned().into(),
-                };
-                Ok(Some((owned, hash)))
+        with_thread_clipboard(|clipboard| {
+            match clipboard.get_image() {
+                Ok(image) => {
+                    let hash = calculate_hash(&image.bytes);
+                    let owned = ImageData {
+                        width: image.width,
+                        height: image.height,
+                        bytes: image.bytes.into_owned().into(),
+                    };
+                    Ok(Some((owned, hash)))
+                }
+                Err(arboard::Error::ContentNotAvailable) => Ok(None),
+                Err(e) => Err(e),
             }
-            Err(arboard::Error::ContentNotAvailable) => Ok(None),
-            Err(e) => Err(e),
-        }
+        })
     }
 
     // --- Adding Items ---
@@ -731,9 +767,10 @@ impl ClipboardManager {
             .unwrap_or(self.history.len());
         self.history.insert(insert_pos, item);
 
-        // Trim history
+        // Trim history, then defer the disk write to the debounce window —
+        // the watcher flushes it, and Drop persists on shutdown.
         self.enforce_history_limit();
-        self.save_history();
+        self.dirty_since = Some(Instant::now());
     }
 
     /// Enforce the configured history size. Returns true if trimming occurred.
@@ -950,30 +987,31 @@ impl ClipboardManager {
             }
         }
 
-        let mut clipboard = get_system_clipboard()?;
         let img = image::load_from_memory(png).map_err(|e| format!("Image load failed: {}", e))?;
         let rgba = img.to_rgba8();
         let expected_bytes = rgba.into_raw();
 
-        let image_data = ImageData {
-            width: width as usize,
-            height: height as usize,
-            bytes: expected_bytes.clone().into(),
-        };
+        with_thread_clipboard(|clipboard| {
+            let image_data = ImageData {
+                width: width as usize,
+                height: height as usize,
+                bytes: expected_bytes.clone().into(),
+            };
 
-        clipboard.set_image(image_data).map_err(|e| e.to_string())?;
+            clipboard.set_image(image_data).map_err(|e| e.to_string())?;
 
-        // Reading through the same arboard instance performs the backend
-        // round trip that confirms our provider owns and serves the selection.
-        let observed = clipboard.get_image().map_err(|e| e.to_string())?;
-        if observed.width != width as usize
-            || observed.height != height as usize
-            || observed.bytes.as_ref() != expected_bytes.as_slice()
-        {
-            return Err("Clipboard image verification returned different data".to_string());
-        }
+            // Reading through the same arboard instance performs the backend
+            // round trip that confirms our provider owns and serves the selection.
+            let observed = clipboard.get_image().map_err(|e| e.to_string())?;
+            if observed.width != width as usize
+                || observed.height != height as usize
+                || observed.bytes.as_ref() != expected_bytes.as_slice()
+            {
+                return Err("Clipboard image verification returned different data".to_string());
+            }
 
-        Ok(())
+            Ok(())
+        })
     }
 
     fn simulate_paste_action(&self) -> Result<(), String> {
@@ -1006,13 +1044,14 @@ impl ClipboardManager {
         }
 
         // Fallback to arboard
-        let mut clipboard = get_system_clipboard()?;
-        clipboard.set_text(text).map_err(|e| e.to_string())?;
-        let observed = clipboard.get_text().map_err(|e| e.to_string())?;
-        if observed != text {
-            return Err("Clipboard text verification returned different data".to_string());
-        }
-        Ok(())
+        with_thread_clipboard(|clipboard| {
+            clipboard.set_text(text).map_err(|e| e.to_string())?;
+            let observed = clipboard.get_text().map_err(|e| e.to_string())?;
+            if observed != text {
+                return Err("Clipboard text verification returned different data".to_string());
+            }
+            Ok(())
+        })
     }
 
     /// Robustly set HTML to clipboard using xclip/wl-copy on Linux if available,
@@ -1040,15 +1079,16 @@ impl ClipboardManager {
         }
 
         // Fallback to arboard (which handles multiple MIME types correctly)
-        let mut clipboard = get_system_clipboard()?;
-        clipboard
-            .set_html(html, Some(plain))
-            .map_err(|e| e.to_string())?;
-        let observed = clipboard.get().html().map_err(|e| e.to_string())?;
-        if observed != html {
-            return Err("Clipboard HTML verification returned different data".to_string());
-        }
-        Ok(())
+        with_thread_clipboard(|clipboard| {
+            clipboard
+                .set_html(html, Some(plain))
+                .map_err(|e| e.to_string())?;
+            let observed = clipboard.get().html().map_err(|e| e.to_string())?;
+            if observed != html {
+                return Err("Clipboard HTML verification returned different data".to_string());
+            }
+            Ok(())
+        })
     }
 
     fn set_clipboard_external(&self, cmd: &str, args: &[&str], data: &[u8]) -> Result<(), String> {
@@ -1117,6 +1157,15 @@ impl ClipboardManager {
                 Ok(())
             }
             Err(e) => Err(format!("Process status check failed: {}", e)),
+        }
+    }
+}
+
+/// Persist debounced insert-path changes on shutdown.
+impl Drop for ClipboardManager {
+    fn drop(&mut self) {
+        if self.dirty_since.is_some() {
+            self.save_history();
         }
     }
 }
@@ -1336,6 +1385,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut manager = manager_in(&dir);
         let item = manager.add_image(solid_image(16, 16), 9).unwrap();
+        // The insert path debounces its save; persist so the reload below
+        // sees the item and keeps its file.
+        manager.save_history();
         let images = dir.path().join("images");
         fs::write(images.join("orphan.png"), b"not a real png").unwrap();
         fs::write(images.join("half-written.png.tmp"), b"junk").unwrap();
