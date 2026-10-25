@@ -269,10 +269,12 @@ impl Popup {
         this.sync_thumbs(cx);
         // The scrollbar thumb is a plain sibling element: re-render the view
         // on wheel scroll so it follows (drags repaint through their own path).
-        let scroll_entity = cx.entity();
+        // Weak handle: during `cx.new` the entity is not inserted yet, so a
+        // strong `cx.entity()` here would panic.
+        let scroll_entity = cx.weak_entity();
         this.list_state
             .set_scroll_handler(move |_, _, cx| {
-                scroll_entity.update(cx, |_, cx| cx.notify());
+                let _ = scroll_entity.update(cx, |_, cx| cx.notify());
             });
         this
     }
