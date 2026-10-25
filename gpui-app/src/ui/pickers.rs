@@ -656,7 +656,7 @@ fn render_emoji_grid_virtual(
                                     e.update(cx, |popup, cx| {
                                         popup.request_hide();
                                         let _ = popup.backend.paste_text(&ch, true);
-                                        popup.refresh_items();
+                                        popup.refresh_items(cx);
                                         popup.after_filter_change();
                                         cx.notify();
                                     });
@@ -773,7 +773,7 @@ fn render_symbol_grid_virtual(
                                         popup.symbol_recents =
                                             crate::pickers::load_recent_symbols();
                                         let _ = popup.backend.paste_text(&click_item.char, false);
-                                        popup.refresh_items();
+                                        popup.refresh_items(cx);
                                         popup.after_filter_change();
                                         cx.notify();
                                     });
@@ -896,7 +896,7 @@ fn render_kaomoji_grid_virtual(
                                     e.update(cx, |popup, cx| {
                                         popup.request_hide();
                                         let _ = popup.backend.paste_text(&t, false);
-                                        popup.refresh_items();
+                                        popup.refresh_items(cx);
                                         popup.after_filter_change();
                                         cx.notify();
                                     });

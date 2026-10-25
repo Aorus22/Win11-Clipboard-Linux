@@ -186,8 +186,14 @@ fn render_content(
             ClipboardContent::Image { .. } => None,
         })
         .children(match &item.content {
-            ClipboardContent::Image { thumb, width, height } => {
-                Some(render_image(thumb.as_deref(), *width, *height, compact, time_color))
+            ClipboardContent::Image { width, height, .. } => {
+                Some(render_image(
+                    state.thumb_for(&item.id),
+                    *width,
+                    *height,
+                    compact,
+                    time_color,
+                ))
             }
             _ => None,
         })
@@ -225,7 +231,7 @@ fn render_text(text: &str, color: gpui::Rgba, compact: bool) -> impl IntoElement
 }
 
 fn render_image(
-    thumb_base64: Option<&str>,
+    thumb: Option<&Arc<gpui::RenderImage>>,
     width: u32,
     height: u32,
     compact: bool,
@@ -237,7 +243,6 @@ fn render_image(
             .text_color(dim)
             .child(format!("Image ({width}×{height})"));
     }
-    let thumb = thumb_base64.and_then(decode_thumb);
     let has_thumb = thumb.is_some();
     div().relative().child(
         div()
@@ -247,7 +252,7 @@ fn render_image(
             .overflow_hidden()
             .bg(theme::black_pct(0.10))
             .children(thumb.map(|image| {
-                img(gpui::ImageSource::Image(Arc::new(image)))
+                img(gpui::ImageSource::Render(image.clone()))
                     .max_w_full()
                     .max_h(px(96.))
                     .object_fit(gpui::ObjectFit::Contain)
@@ -274,13 +279,25 @@ fn render_image(
     )
 }
 
-fn decode_thumb(thumb_base64: &str) -> Option<gpui::Image> {
+/// Decode a card's preview PNG into a GPUI texture. The Popup owns the
+/// returned `RenderImage` so its GPU atlas tile can be freed with `drop_image`
+/// when the item leaves history (GPUI never evicts atlas entries itself).
+/// Frames are BGRA — swap channels exactly like gpui's own PNG decode path.
+pub(crate) fn decode_thumb(thumb_base64: &str) -> Option<Arc<gpui::RenderImage>> {
     use base64::Engine;
-    let bytes = base64::engine::general_purpose::STANDARD
+    let png = base64::engine::general_purpose::STANDARD
         .decode(thumb_base64)
         .ok()?;
-    // Small preview PNG; the full-resolution image stays on disk.
-    Some(gpui::Image::from_bytes(gpui::ImageFormat::Png, bytes))
+    let decoded = image::load_from_memory(&png).ok()?.to_rgba8();
+    let (width, height) = (decoded.width(), decoded.height());
+    let mut bgra = decoded.into_raw();
+    for pixel in bgra.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    let buffer = image::RgbaImage::from_raw(width, height, bgra)?;
+    Some(Arc::new(gpui::RenderImage::new(vec![image::Frame::new(
+        buffer,
+    )])))
 }
 
 fn render_actions(
@@ -338,7 +355,7 @@ fn render_actions(
             cx,
             move |this, _, _, cx| {
                 this.backend.toggle_pin(&pin_id);
-                this.refresh_items();
+                this.refresh_items(cx);
                 cx.notify();
             },
         ))
@@ -351,7 +368,7 @@ fn render_actions(
             cx,
             move |this, _, _, cx| {
                 this.backend.remove_item(&del_id);
-                this.refresh_items();
+                this.refresh_items(cx);
                 this.after_filter_change();
                 cx.notify();
             },
