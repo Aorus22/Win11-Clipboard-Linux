@@ -381,15 +381,10 @@ fn open_popup_window(
         .expect("failed to open GPUI popup window");
     let _ = handle.update(cx, |_, window, _| window.set_window_title(POPUP_TITLE));
     if start_hidden {
-        // Parked: only arm focus-loss dismissal, take neither focus nor
-        // activation until the first real show — then withdraw immediately:
+        // Parked: take neither focus nor activation until the first real show — then withdraw immediately:
         // creation maps the window and the WM may clamp the parked origin
         // onscreen. Retry briefly; the X window may not be visible to our
         // own connection yet.
-        let _ = handle.update(cx, |popup, window, cx| {
-            popup.watch_activation(window, cx);
-            cx.notify();
-        });
         let size = handle.update(cx, |_, window, _| {
             let scale = platform::backend().coordinate_scale(window.scale_factor());
             let bounds = window.bounds().size;
@@ -421,11 +416,9 @@ fn open_popup_window(
     let _ = handle.update(cx, |popup, window, cx| {
         // gpui's X11 backend ignores `WindowOptions.focus`, so ask the window
         // manager directly: an unfocused popup receives no keystrokes (search
-        // text, arrows, Enter) and never reports losing focus, so clicking
-        // outside would leave it up.
+        // text, arrows, Enter).
         window.activate_window();
         popup.focus.focus(window, cx);
-        popup.watch_activation(window, cx);
         cx.notify();
     });
     handle
@@ -868,7 +861,6 @@ fn main() {
                         if h
                             .update(cx, |popup, _window, cx| {
                                 popup.poll_backend(cx);
-                                popup.check_focus_loss_dismiss();
                             })
                             .is_err()
                         {

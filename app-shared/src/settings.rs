@@ -50,12 +50,6 @@ pub struct AppSettings {
     pub custom_kaomojis: Vec<CustomKaomoji>,
     #[serde(default = "default_ui_scale")]
     pub ui_scale: f32,
-    /// Close the popup when another window takes focus. Disable for
-    /// focus-follows-mouse desktops (hover then moves focus without a click);
-    /// a physical click outside the popup still closes it via the evdev
-    /// click watcher.
-    #[serde(default = "default_true")]
-    pub close_on_focus_loss: bool,
     /// Manual override for the transparency safety gate (NVIDIA/AppImage):
     /// when true the backdrop-opacity sliders stay adjustable even where
     /// rendering artefacts are possible. Default off (safe).
@@ -99,7 +93,6 @@ impl Default for AppSettings {
             auto_delete_unit: default_unit(),
             custom_kaomojis: Vec::new(),
             ui_scale: default_ui_scale(),
-            close_on_focus_loss: true,
             allow_transparency: false,
         }
     }

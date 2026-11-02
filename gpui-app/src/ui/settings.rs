@@ -47,6 +47,9 @@ impl ThemeChoice {
     }
 }
 
+/// Widest the settings content gets; the page centres it beyond that.
+const SETTINGS_MAX_WIDTH: f32 = 760.0;
+
 /// State of the manual "Check for updates" flow.
 #[derive(Debug, Clone)]
 pub enum UpdateStatus {
@@ -197,7 +200,6 @@ impl SettingsState {
         self.edit(|s| match key {
             "smart" => s.enable_smart_actions = !s.enable_smart_actions,
             "tray" => s.enable_dynamic_tray_icon = !s.enable_dynamic_tray_icon,
-            "focus" => s.close_on_focus_loss = !s.close_on_focus_loss,
             "transparency" => s.allow_transparency = !s.allow_transparency,
             _ => {}
         });
@@ -548,17 +550,28 @@ impl Render for SettingsState {
                         .pb(px(32.))
                         .flex()
                         .flex_col()
-                        .gap(px(24.))
-                        .child(self.render_appearance(&settings, is_dark, cx))
-                        .child(self.render_autodelete(&settings, is_dark, window, cx))
-                        .child(self.render_transparency(&settings, is_dark, window, cx))
-                        .child(self.render_uiscale(&settings, is_dark, window, cx))
-                        .child(self.render_history(&settings, is_dark, window, cx))
-                        .child(self.render_kaomoji(&settings, is_dark, window, cx))
-                        .child(self.render_features(&settings, is_dark, cx))
-                        .child(self.render_shortcuts(is_dark, cx))
-                        .child(self.render_about(is_dark, cx))
-                        .child(self.render_reset(is_dark, cx)),
+                        .items_center()
+                        .child(
+                            // Cap the content width and centre it, so the cards
+                            // don't stretch across a maximised window.
+                            div()
+                                .w_full()
+                                .max_w(px(SETTINGS_MAX_WIDTH))
+                                .min_w(px(0.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(24.))
+                                .child(self.render_appearance(&settings, is_dark, cx))
+                                .child(self.render_autodelete(&settings, is_dark, window, cx))
+                                .child(self.render_transparency(&settings, is_dark, window, cx))
+                                .child(self.render_uiscale(&settings, is_dark, window, cx))
+                                .child(self.render_history(&settings, is_dark, window, cx))
+                                .child(self.render_kaomoji(&settings, is_dark, window, cx))
+                                .child(self.render_features(&settings, is_dark, cx))
+                                .child(self.render_shortcuts(is_dark, cx))
+                                .child(self.render_about(is_dark, cx))
+                                .child(self.render_reset(is_dark, cx)),
+                        ),
                     repaint,
                 )
             })
@@ -1055,7 +1068,6 @@ impl SettingsState {
         };
 
         let tray_on = settings.enable_dynamic_tray_icon;
-        let focus_on = settings.close_on_focus_loss;
         self.card(
             is_dark,
             div()
@@ -1101,39 +1113,6 @@ impl SettingsState {
                                     is_dark,
                                     cx,
                                     |this, _, _, cx| this.toggle_bool("tray", cx),
-                                )),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .justify_between()
-                                .child(
-                                    div().flex().flex_col().flex_1().min_w(px(0.))
-                                        .child(
-                                            div()
-                                                .text_size(px(12.25))
-                                                .child("Close on Focus Loss"),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(px(10.5))
-                                                .mt(px(2.))
-                                                .text_color(if is_dark {
-                                                    theme::gray::g400()
-                                                } else {
-                                                    theme::gray::g500()
-                                                })
-                                                .child("Close the popup when another window takes focus. Turn off for focus-follows-mouse setups (a click outside still closes it)."),
-                                        ),
-                                )
-                                .child(super::controls::switch(
-                                    ("switch", 4),
-                                    focus_on,
-                                    is_dark,
-                                    cx,
-                                    |this, _, _, cx| this.toggle_bool("focus", cx),
                                 )),
                         ),
                 )
@@ -1908,6 +1887,8 @@ impl SettingsState {
                         .child(
                             div()
                                 .id("register-shortkeys")
+                                .self_start()
+                                .flex_shrink_0()
                                 .flex()
                                 .flex_row()
                                 .items_center()
@@ -2030,6 +2011,7 @@ impl SettingsState {
         let button = |id: &'static str, label: &'static str, primary: bool| {
             div()
                 .id(id)
+                .flex_shrink_0()
                 .flex()
                 .flex_row()
                 .items_center()
@@ -2057,7 +2039,7 @@ impl SettingsState {
                 .child(label)
         };
 
-        let mut actions = div().flex().flex_row().gap(px(8.));
+        let mut actions = div().flex().flex_row().flex_wrap().gap(px(8.));
         let busy = matches!(status, UpdateStatus::Checking | UpdateStatus::Downloading(_));
         if !busy && !matches!(status, UpdateStatus::ReadyToRestart) {
             actions = actions.child(

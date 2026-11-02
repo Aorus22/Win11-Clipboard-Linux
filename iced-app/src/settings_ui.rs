@@ -20,7 +20,6 @@ pub enum Feature {
     SmartActions,
     Autostart,
     DynamicTray,
-    CloseOnFocusLoss,
     AllowTransparency,
 }
 
@@ -139,7 +138,6 @@ pub fn update(state: &mut State, settings: &mut AppSettings, msg: Msg) -> Outcom
             match feature {
                 Feature::SmartActions => settings.enable_smart_actions = !settings.enable_smart_actions,
                 Feature::DynamicTray => settings.enable_dynamic_tray_icon = !settings.enable_dynamic_tray_icon,
-                Feature::CloseOnFocusLoss => settings.close_on_focus_loss = !settings.close_on_focus_loss,
                 Feature::AllowTransparency => settings.allow_transparency = !settings.allow_transparency,
                 Feature::Autostart => {
                     let _ = if app_shared::launcher::autostart_is_enabled() {
@@ -405,12 +403,6 @@ fn features<'a>(_state: &'a State, settings: &'a AppSettings) -> Element<'a, Msg
             "Switch the tray glyph between light and dark with the theme.",
             settings.enable_dynamic_tray_icon,
             Feature::DynamicTray,
-        ))
-        .add(toggle(
-            "Close when focus is lost",
-            "Dismiss the popup when another window takes focus.",
-            settings.close_on_focus_loss,
-            Feature::CloseOnFocusLoss,
         ))
         .into()
 }

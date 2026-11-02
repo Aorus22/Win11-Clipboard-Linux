@@ -557,11 +557,15 @@ pub fn palette_from_colors(c: &GtkColors) -> theme::GtkPalette {
     let warning = c.warning.unwrap_or_else(|| gpui::rgb(theme::hex::WARNING));
     let success = c.success.unwrap_or_else(|| gpui::rgb(theme::hex::SUCCESS));
 
-    // Neutral ramp between the palette's own background and foreground: only the
-    // branch matching this scheme is rendered, so each step keeps its role
-    // (`g400` = muted text on dark, `g100` = hover surface on light, …).
+    // Neutral ramp between the palette's own background and foreground, in
+    // Tailwind's *absolute* order: `g50` is the lightest step, `g900` the
+    // darkest. The UI relies on that in both schemes (dark branches use
+    // `g200` for light text and `g400` for muted text, light branches use
+    // `g700` for dark text), so on a dark palette the background->foreground
+    // steps run in reverse — otherwise `g200` lands next to the background
+    // and its text vanishes.
     let ramp = |t: f32| theme::mix(bg_primary, fg, t);
-    let gray = [
+    let mut gray = [
         ramp(0.03),
         ramp(0.06),
         ramp(0.12),
@@ -573,6 +577,9 @@ pub fn palette_from_colors(c: &GtkColors) -> theme::GtkPalette {
         ramp(0.90),
         fg,
     ];
+    if is_dark {
+        gray.reverse();
+    }
 
     theme::GtkPalette {
         is_dark,
@@ -760,18 +767,29 @@ mod tests {
     }
 
     #[test]
-    fn gray_ramp_runs_from_background_to_foreground() {
+    fn gray_ramp_is_lightest_first_in_both_schemes() {
         let _serial = serial_lock();
-        let palette = palette_from_colors(&fixture());
-        assert_eq!(palette.gray[0], theme::mix(palette.bg_primary, palette.text_primary, 0.03));
-        assert_eq!(palette.gray[9], palette.text_primary);
-        // Monotonic towards the foreground.
-        for pair in palette.gray.windows(2) {
-            assert!(
-                theme::relative_luminance(pair[1]) > theme::relative_luminance(pair[0]),
-                "ramp must climb towards the light foreground"
-            );
+        let dark = palette_from_colors(&fixture());
+        let light = palette_from_colors(&GtkColors {
+            bg: color(0xf0f0f0),
+            fg: color(0x222222),
+            base: color(0xffffff),
+            ..fixture()
+        });
+        assert!(dark.is_dark && !light.is_dark);
+        for palette in [dark, light] {
+            // Tailwind order: strictly darker from g50 to g900.
+            for pair in palette.gray.windows(2) {
+                assert!(
+                    theme::relative_luminance(pair[1]) < theme::relative_luminance(pair[0]),
+                    "gray ramp must run light -> dark: {:?}",
+                    palette.gray
+                );
+            }
         }
+        // Dark: the light end is the foreground, so `g200` text stays readable.
+        assert_eq!(dark.gray[0], dark.text_primary);
+        assert_eq!(light.gray[9], light.text_primary);
     }
 
     /// Tokyo Night as it sits on this project's dev machine: `gtk-theme` is

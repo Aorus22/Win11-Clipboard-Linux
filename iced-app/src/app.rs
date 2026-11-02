@@ -41,8 +41,6 @@ const APP_ID: &str = "dev.gustavosett.clipboard-history-iced";
 /// A second nudge if the first one got no answer (the surface may not have been ready).
 const POINTER_RETRY: Duration = Duration::from_millis(110);
 const POINTER_WAIT: Duration = Duration::from_millis(330);
-/// Focus must stay away this long before the popup dismisses itself.
-const FOCUS_LOSS_GRACE: Duration = Duration::from_millis(350);
 /// Appear animation of the popup.
 const FADE_IN: Duration = Duration::from_millis(250);
 const POPUP_TITLE: &str = "Clipboard History Popup";
@@ -70,7 +68,6 @@ pub enum Message {
     PopupWindowOpened(window::Id),
     WindowScale(window::Id, f32),
     Key(KeyEvent),
-    Focus(window::Id, bool),
     Tick,
     /// A frame of the fade-in animation.
     Frame,
@@ -112,7 +109,6 @@ pub struct App {
     show_when_open: bool,
     last_version: u64,
     recent_emojis: Vec<String>,
-    focus_loss_armed: Option<Instant>,
     /// When the popup was last shown (drives the 250 ms fade-in).
     shown_at: Option<Instant>,
     /// Blur state last sent to the compositor (None = never).
@@ -166,7 +162,6 @@ impl cosmic::Application for App {
             visible: false,
             show_when_open: false,
             recent_emojis: Vec::new(),
-            focus_loss_armed: None,
             shown_at: None,
             blurred: None,
             pending_title: None,
@@ -259,8 +254,6 @@ impl cosmic::Application for App {
                     Some(Message::OverlayRelease)
                 }
                 cosmic::iced::Event::Mouse(mouse::Event::CursorLeft) => Some(Message::OverlayRelease),
-                cosmic::iced::Event::Window(window::Event::Focused) => Some(Message::Focus(id, true)),
-                cosmic::iced::Event::Window(window::Event::Unfocused) => Some(Message::Focus(id, false)),
                 _ => None,
             }));
             subs.push(time::every(Duration::from_millis(250)).map(|_| Message::Tick));
@@ -398,24 +391,6 @@ impl App {
                         self.popup.items = self.backend.snapshot();
                         self.popup.warm_thumbs();
                     }
-                    if self.settings.close_on_focus_loss {
-                        if let Some(at) = self.focus_loss_armed {
-                            if at.elapsed() >= FOCUS_LOSS_GRACE {
-                                self.focus_loss_armed = None;
-                                return self.hide();
-                            }
-                        }
-                    }
-                }
-                T::none()
-            }
-            Message::Focus(id, focused) => {
-                if self.is_popup_window(id) && self.visible {
-                    if focused {
-                        self.focus_loss_armed = None;
-                    } else {
-                        self.focus_loss_armed = Some(Instant::now());
-                    }
                 }
                 T::none()
             }
@@ -537,19 +512,10 @@ impl App {
         }
     }
 
-    fn is_popup_window(&self, id: window::Id) -> bool {
-        match &self.surface {
-            Surface::Overlay(ov) => ov.id == id,
-            Surface::Window { id: win, .. } => *win == id,
-            Surface::None => false,
-        }
-    }
-
     // --- Popup lifecycle ---
 
     fn show(&mut self, tab: Tab) -> T {
         focus_manager::save_focused_window();
-        self.focus_loss_armed = None;
         let items = self.backend.snapshot();
         self.last_version = self.backend.version();
         self.popup.prepare_for_show(tab, items);
@@ -651,7 +617,6 @@ impl App {
     fn hide(&mut self) -> T {
         self.visible = false;
         self.hooks.set_visible(false);
-        self.focus_loss_armed = None;
         let _ = focus_manager::restore_focused_window();
         focus_manager::note_popup_window(None);
         match std::mem::replace(&mut self.surface, Surface::None) {

@@ -134,14 +134,6 @@ pub struct Popup {
     /// Bumped on every show so the appear animation gets a fresh element id
     /// and visibly restarts (the window — and this view — is persistent now).
     appear_gen: u64,
-    /// Armed focus-loss dismissal. Dropping the subscription would silently
-    /// stop the popup from ever closing itself, so it lives as long as the view.
-    activation_watch: Option<gpui::Subscription>,
-    /// Timestamp of the last focus loss with the pointer outside the popup.
-    /// Dismissal fires only if focus stays away past [`FOCUS_LOSS_GRACE`]
-    /// (see `check_focus_loss_dismiss`): on focus-follows-mouse desktops a
-    /// brief excursion must not close the popup, only a real move-away/click.
-    focus_loss_armed_at: Option<Instant>,
     /// `Some` when the popup is an overlay card rather than a window.
     pub overlay: Option<OverlayCard>,
 }
@@ -187,11 +179,6 @@ fn rows_signature(rows: &[ListRow]) -> u64 {
     }
     combined
 }
-
-/// Grace between focus loss (pointer outside) and auto-dismissal. Long
-/// enough to survive focus flicker and a quick mouse pass-through, short
-/// enough that an outside click still feels like it closes the popup.
-const FOCUS_LOSS_GRACE: Duration = Duration::from_millis(350);
 
 impl PickerTabState {
     fn new(search_focus: FocusHandle) -> Self {
@@ -257,8 +244,6 @@ impl Popup {
             last_settings_version: 1,
             last_settings_mtime: crate::settings::settings_mtime(),
             appear_gen: 0,
-            activation_watch: None,
-            focus_loss_armed_at: None,
             overlay: (crate::platform::backend().popup_surface()
                 == crate::platform::PopupSurface::Overlay)
                 .then(|| OverlayCard {
@@ -307,8 +292,6 @@ impl Popup {
         self.tab = tab;
         self.after_filter_change();
         self.appear_gen += 1;
-        // A stale arm from before the hide must never fire right after a show.
-        self.focus_loss_armed_at = None;
         if let Some(overlay) = self.overlay.as_mut() {
             *overlay = OverlayCard {
                 pos: None,
@@ -426,79 +409,6 @@ impl Popup {
             overlay.pos = Some(pos);
             overlay.grab = Some(grab);
         }
-    }
-
-    /// Whether a pending focus-loss dismissal has matured and should fire.
-    /// Pure over the timestamp so it is unit-testable.
-    fn focus_loss_due(armed_at: Option<Instant>, now: Instant) -> bool {
-        armed_at.is_some_and(|t| now.saturating_duration_since(t) >= FOCUS_LOSS_GRACE)
-    }
-
-    /// Fire a matured focus-loss dismissal (called from the 50 ms poll loop
-    /// via `check_focus_loss_dismiss`). Returns true when it hid the popup.
-    pub fn check_focus_loss_dismiss(&mut self) -> bool {
-        if Self::focus_loss_due(self.focus_loss_armed_at, Instant::now()) {
-            self.focus_loss_armed_at = None;
-            crate::drag_log::log("activation: dismissed on focus loss (grace elapsed)");
-            self.request_hide();
-            return true;
-        }
-        false
-    }
-
-    /// Close the popup when another window — or the desktop itself — takes
-    /// focus (parity with the Tauri build's `WindowEvent::Focused(false)`
-    /// handler, minus its settings-window carve-out).
-    ///
-    /// This is deliberately focus-loss based rather than an outside-click
-    /// detector: under XWayland an `XGrabPointer` only sees clicks that land on
-    /// XWayland-owned pixels, so clicks on the desktop, on window decorations or
-    /// on Wayland-native apps never arrive — the same wall OpenJDK hit in
-    /// JDK-8280993, whose shipped fix is also focus-loss dismissal.
-    ///
-    /// Dismissal is suppressed while the pointer sits inside the popup, which is
-    /// exactly the Tauri build's `is_mouse_inside` guard. It matters because a
-    /// window-move grab (the drag strip) is a WM-side grab that drops the
-    /// popup's focus at the moment the drag starts; without the guard the popup
-    /// destroys itself on the first pixel of a drag. A click on another window
-    /// or on the desktop cannot happen with the pointer over the popup, so the
-    /// outside-click behaviour is unaffected.
-    ///
-    /// Dismissal is delayed by [`FOCUS_LOSS_GRACE`], not instant: on
-    /// focus-follows-mouse desktops focus also moves on hover, so a brief
-    /// excursion (mouse passing over another window, focus flicker) arms the
-    /// timer and regaining focus disarms it — only a sustained move-away,
-    /// such as an outside click, actually hides the popup. The evdev click
-    /// watcher still closes instantly on a physical outside click where it
-    /// can see one.
-    ///
-    /// `observe_window_activation` invokes the callback once immediately at
-    /// registration, which happens before the popup has been activated, so only
-    /// a transition *away* from an activated window dismisses it; reacting to
-    /// the first callback would close the popup the instant it opened.
-    pub fn watch_activation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mut was_active = false;
-        self.activation_watch = Some(cx.observe_window_activation(window, move |this, window, _| {
-            if window.is_window_active() {
-                was_active = true;
-                // Back home: a pending dismissal no longer applies.
-                this.focus_loss_armed_at = None;
-            } else if was_active && !window.is_window_hovered() {
-                // Focus-follows-mouse desktops move focus on hover, so focus
-                // loss alone must not close when the user disabled it — the
-                // evdev click watcher still closes on a physical outside click.
-                if this.shared.lock().settings.close_on_focus_loss {
-                    if this.focus_loss_armed_at.is_none() {
-                        crate::drag_log::log("activation: focus loss armed (grace running)");
-                    }
-                    this.focus_loss_armed_at = Some(Instant::now());
-                } else {
-                    crate::drag_log::log("activation: focus loss ignored (close_on_focus_loss=off)");
-                }
-            } else if was_active {
-                crate::drag_log::log("activation: focus lost while pointer inside, kept open");
-            }
-        }));
     }
 
     pub fn search_mut(&mut self, which: SearchWhich) -> &mut SearchState {
@@ -1939,25 +1849,5 @@ mod tests {
             Some(4)
         );
         assert_eq!(Popup::clipboard_scroll_index(3, 3, 2, 3, true, false), None);
-    }
-
-    #[test]
-    fn focus_loss_dismissal_needs_sustained_absence() {
-        use super::FOCUS_LOSS_GRACE;
-        use std::time::{Duration, Instant};
-        let now = Instant::now();
-        // Not armed: never due.
-        assert!(!Popup::focus_loss_due(None, now));
-        // Just armed: grace has not elapsed.
-        assert!(!Popup::focus_loss_due(Some(now), now));
-        assert!(!Popup::focus_loss_due(
-            Some(now - FOCUS_LOSS_GRACE / 2),
-            now
-        ));
-        // Focus stayed away past the grace: due.
-        assert!(Popup::focus_loss_due(
-            Some(now - FOCUS_LOSS_GRACE - Duration::from_millis(1)),
-            now
-        ));
     }
 }
