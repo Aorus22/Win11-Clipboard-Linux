@@ -160,6 +160,24 @@ pub fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
     }
 }
 
+/// Flatten a translucent color onto a backdrop (source-over), keeping the
+/// backdrop's own alpha.
+///
+/// GTK color tokens routinely carry alpha: Adwaita ships `card_bg_color` as
+/// `RGB(255 255 255 / 8%)`, and every theme that follows it (COSMIC, adw-gtk3,
+/// WhiteSur's GTK4 sheet) does the same. A token used as a solid surface must be
+/// flattened first — using its bare RGB turns an 8% white overlay into a pure
+/// white card.
+pub fn composite(backdrop: Rgba, color: Rgba) -> Rgba {
+    let a = color.a.clamp(0.0, 1.0);
+    Rgba {
+        r: backdrop.r + (color.r - backdrop.r) * a,
+        g: backdrop.g + (color.g - backdrop.g) * a,
+        b: backdrop.b + (color.b - backdrop.b) * a,
+        a: backdrop.a,
+    }
+}
+
 pub fn lighten(color: Rgba, amount: f32) -> Rgba {
     mix(color, rgb(0xffffff), amount)
 }
@@ -808,6 +826,17 @@ mod tests {
         assert_eq!(contrast_text(rgb(0xffffff)), rgb(0x000000));
         assert_eq!(contrast_text(rgb(0x0860f2)), rgb(0xffffff));
         assert_eq!(contrast_text(rgb(0xfcd34d)), rgb(0x000000));
+        // `composite` flattens a translucent overlay onto its backdrop.
+        let flat = composite(rgb(0x222226), rgb(0x123456));
+        assert_eq!(flat.a, 1.0);
+        assert!((flat.r - 0x12 as f32 / 255.0).abs() < 1e-6);
+        assert_eq!(
+            composite(rgb(0x222226), Rgba { a: 0.0, ..rgb(0xffffff) }),
+            rgb(0x222226)
+        );
+        let card = composite(rgb(0x222226), Rgba { a: 0.08, ..rgb(0xffffff) });
+        assert_eq!(card.a, 1.0);
+        assert!(card.r < 0.25, "8% white over a dark window must stay dark");
     }
 
     #[test]

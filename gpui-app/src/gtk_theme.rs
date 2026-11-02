@@ -520,8 +520,13 @@ pub fn palette_from_colors(c: &GtkColors) -> theme::GtkPalette {
     let bg_secondary = base;
     let bg_tertiary = theme::mix(base, fg, 0.06);
     // Cards sit on top of the window: libadwaita's own card color when the user
-    // configured one, else the base surface.
-    let bg_card = c.card.unwrap_or(base);
+    // configured one, else the base surface. `card_bg_color` is a *translucent
+    // overlay* (Adwaita dark ships `RGB(255 255 255 / 8%)`), so flatten it over
+    // the window background — taking the bare RGB yields a white card.
+    let bg_card = match c.card {
+        Some(card) => theme::composite(bg_primary, card),
+        None => base,
+    };
     let bg_card_hover = theme::mix(bg_card, fg, 0.08);
 
     let text_primary = fg;
@@ -705,6 +710,52 @@ mod tests {
         assert_eq!(palette.on_accent, color(0xffffff));
         // Darker accent on hover for a light scheme.
         assert_eq!(palette.accent_hover, theme::darken(color(0x3584e4), 0.10));
+        theme::clear_gtk();
+    }
+
+    /// Adwaita — and every theme that copies it (COSMIC, adw-gtk3) — publishes
+    /// `card_bg_color` as `RGB(255 255 255 / 8%)`. Flattening it over the window
+    /// background must keep the card dark; taking the bare RGB produced a solid
+    /// white card with white text on top.
+    #[test]
+    fn translucent_card_token_is_flattened_not_taken_as_white() {
+        let _serial = serial_lock();
+        theme::set_portal_accent(None);
+        theme::clear_gtk();
+        let colors = GtkColors {
+            theme_name: "Adwaita".to_string(),
+            prefer_dark: true,
+            bg: color(0x222226),
+            fg: color(0xffffff),
+            base: color(0x1d1d20),
+            card: Some(Rgba {
+                a: 0.08,
+                ..color(0xffffff)
+            }),
+            selected_bg: Some(color(0x3584e4)),
+            selected_fg: None,
+            borders: None,
+            insensitive_fg: None,
+            error: None,
+            warning: None,
+            success: None,
+            accent_color: None,
+            accent_bg_color: None,
+        };
+        let palette = palette_from_colors(&colors);
+
+        assert!(palette.is_dark);
+        assert_eq!(palette.bg_card.a, 1.0, "card token must be opaque");
+        assert!(
+            theme::relative_luminance(palette.bg_card) < 0.1,
+            "8% white over #222226 must stay dark, got {:?}",
+            palette.bg_card
+        );
+        // Text stays legible on the flattened card.
+        assert!(
+            theme::relative_luminance(palette.text_primary)
+                > theme::relative_luminance(palette.bg_card) + 0.5
+        );
         theme::clear_gtk();
     }
 
