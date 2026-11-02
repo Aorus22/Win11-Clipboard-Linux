@@ -1,0 +1,68 @@
+name: Tests
+
+# The AppImage build compiles the code but never runs the unit tests, so a
+# broken test sails straight into a release. The bulk of them live in
+# `gpui-app` (theme parsing, GTK colour handling, layout maths) and none of
+# them need a display — they are plain `#[test]` functions.
+#
+# Same Arch container and dependency script as build-appimage.yml, so a green
+# run here means the code will also compile for the release build.
+
+on:
+  push:
+    paths:
+      - 'gpui-app/**'
+      - 'core/**'
+      - 'scripts/anylinux/get-dependencies.sh'
+      - '.github/workflows/tests.yml'
+  pull_request:
+    paths:
+      - 'gpui-app/**'
+      - 'core/**'
+      - 'scripts/anylinux/get-dependencies.sh'
+      - '.github/workflows/tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Unit tests (x86_64)
+    runs-on: ubuntu-latest
+    container: ghcr.io/pkgforge-dev/archlinux:latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Preparing container
+        uses: pkgforge-dev/anylinux-setup-action@b2d1ce4216f71162e00ae58fa11ee9aeb723d0d5 # v5
+
+      - name: Cache cargo downloads
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-test-arch-${{ hashFiles('gpui-app/Cargo.lock', 'core/Cargo.lock') }}
+          restore-keys: |
+            cargo-test-arch-
+
+      - name: Install dependencies
+        run: /bin/sh scripts/anylinux/get-dependencies.sh
+
+      # Storage schema, migration, GC, limits.
+      - name: Core tests
+        run: cargo test --manifest-path core/Cargo.toml
+
+      # Theme parsing and GTK colour tokens live here, including the regression
+      # test for translucent `card_bg_color` overlays being flattened onto the
+      # window instead of being read as solid white.
+      - name: GPUI app tests
+        run: cargo test --manifest-path gpui-app/Cargo.toml
