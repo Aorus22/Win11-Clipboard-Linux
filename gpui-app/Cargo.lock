@@ -7692,7 +7692,7 @@ dependencies = [
 
 [[package]]
 name = "win11-clipboard-history-gpui"
-version = "1.0.4"
+version = "1.0.7"
 dependencies = [
  "anyhow",
  "app-shared",
