@@ -75,7 +75,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Preparing container
-        uses: pkgforge-dev/anylinux-setup-action@b2d1ce4216f71162e00ae58fa11ee9aeb723d0d5 # v5
+        uses: pkgforge-dev/anylinux-setup-action@ba7321e11074f9e387a0634e653d09b115d576cd # v6
 
       - name: Cache cargo downloads
         uses: actions/cache@v6
