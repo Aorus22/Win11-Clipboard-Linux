@@ -266,7 +266,7 @@ export default class ClipboardHelper extends Extension {
     // CLIPBOARD_HELPER_DEBUG=1 in the shell's environment.
     _debugDevice() {
         if (!GLib.getenv('CLIPBOARD_HELPER_DEBUG')) return null;
-        this._vdev ??= Clutter.get_default_backend().get_default_seat()
+        this._vdev ??= global.stage.get_context().get_backend().get_default_seat()
             .create_virtual_device(Clutter.InputDeviceType.POINTER_DEVICE);
         return this._vdev;
     }
@@ -294,7 +294,7 @@ export default class ClipboardHelper extends Extension {
 
     DebugKey(keyval) {
         if (!GLib.getenv('CLIPBOARD_HELPER_DEBUG')) return;
-        this._vkbd ??= Clutter.get_default_backend().get_default_seat()
+        this._vkbd ??= global.stage.get_context().get_backend().get_default_seat()
             .create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE);
         const t = GLib.get_monotonic_time();
         this._vkbd.notify_keyval(t, keyval, Clutter.KeyState.PRESSED);
