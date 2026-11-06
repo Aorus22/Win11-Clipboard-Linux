@@ -53,7 +53,8 @@ fn main() -> cosmic::iced::Result {
     env_logger::init();
     identity::init(AppIdentity::ICED);
     // Must run before the toolkit starts: it may rewrite the environment (x11 backend).
-    platform::init();
+    let platform_backend = app_shared::settings::load().platform_backend;
+    platform::init_with_preference(Some(&platform_backend));
     win11_clipboard_history_lib::rendering_env::init();
 
     let args: Vec<String> = std::env::args().collect();
@@ -111,11 +112,27 @@ fn main() -> cosmic::iced::Result {
     let flags = Flags {
         commands,
         open_settings: has_arg(&args, "--settings"),
-        open_wizard: has_arg(&args, "--setup") || app_shared::launcher::is_first_run(),
+        open_wizard: has_arg(&args, "--setup")
+            || app_shared::launcher::is_first_run()
+            || platform::needs_setup(),
         background: has_arg(&args, "--background"),
     };
     let settings = cosmic::app::Settings::default().no_main_window(true).transparent(true);
     cosmic::app::run::<app::App>(settings, flags)
+}
+
+pub fn spawn_backend_restart() -> Result<(), String> {
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg("sleep 1; exec \"$0\"")
+        .arg(app_shared::launcher::launcher_path())
+        .env("APPIMAGE_EXTRACT_AND_RUN", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Couldn't restart with the selected backend: {error}"))
 }
 
 fn exit_with(result: Result<String, String>, failure: &str) -> ! {

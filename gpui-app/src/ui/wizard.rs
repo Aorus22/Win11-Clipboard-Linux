@@ -52,14 +52,32 @@ pub struct WizardState {
     pub hovered_button: Option<String>,
     pub selected_backend: String,
     pub backend_choice_error: Option<String>,
+    pub restart_required: bool,
+    pub relogin_required: bool,
 }
 
 fn backend_choice_available() -> bool {
+    crate::platform::wayland_session() || crate::platform::needs_setup()
+}
+
+fn native_backend_choice_available() -> bool {
     crate::platform::wayland_session()
         && matches!(
             crate::platform::shortcuts::current_desktop(),
             Desktop::Gnome | Desktop::Cosmic
         )
+}
+
+fn choice_backend_name(choice: &str) -> Option<&'static str> {
+    match choice {
+        "x11" | "xwayland" => Some("x11"),
+        "wayland" => match crate::platform::shortcuts::current_desktop() {
+            Desktop::Gnome => Some("gnome"),
+            Desktop::Cosmic => Some("cosmic"),
+            Desktop::Other => None,
+        },
+        _ => None,
+    }
 }
 
 impl WizardState {
@@ -72,8 +90,10 @@ impl WizardState {
         let saved_backend = shared.lock().settings.platform_backend.clone();
         let selected_backend = match saved_backend.as_str() {
             "wayland" | "xwayland" => saved_backend,
-            _ if backend_choice_available() => "wayland".to_string(),
-            _ => "auto".to_string(),
+            "x11" if crate::platform::wayland_session() => "xwayland".to_string(),
+            "x11" => saved_backend,
+            _ if backend_choice_available() => String::new(),
+            _ => "x11".to_string(),
         };
         let mut this = Self {
             shared,
@@ -96,6 +116,8 @@ impl WizardState {
             hovered_button: None,
             selected_backend,
             backend_choice_error: None,
+            restart_required: crate::platform::needs_setup(),
+            relogin_required: false,
         };
         this.refresh_all();
         this
@@ -170,7 +192,43 @@ impl WizardState {
         cx.notify();
     }
 
-    fn complete(&mut self, window: &mut Window, _cx: &mut Context<Self>) {
+    fn complete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.backend_choice_error.is_some() {
+            cx.notify();
+            return;
+        }
+        if self.restart_required {
+            if self.extension_note.as_ref().is_some_and(|note| note.is_err()) {
+                self.backend_choice_error = Some(
+                    "The selected backend is not ready. Go back and choose XWayland, or fix the GNOME extension and try again.".to_string(),
+                );
+                cx.notify();
+                return;
+            }
+            if !self.relogin_required
+                && !crate::platform::selection_ready(&self.selected_backend)
+            {
+                self.backend_choice_error = Some(
+                    "The selected backend is not available yet. Go back and choose an available backend.".to_string(),
+                );
+                cx.notify();
+                return;
+            }
+            let _ = app_state::mark_first_run_complete();
+            if self.relogin_required {
+                window.remove_window();
+                cx.quit();
+                return;
+            }
+            match crate::updater::spawn_backend_restart() {
+                Ok(()) => cx.quit(),
+                Err(error) => {
+                    self.backend_choice_error = Some(error);
+                    cx.notify();
+                }
+            }
+            return;
+        }
         let _ = app_state::mark_first_run_complete();
         self.shared.lock().open_popup_requested = true;
         window.remove_window();
@@ -183,7 +241,19 @@ impl WizardState {
         }
     }
 
-    fn save_backend_choice(&mut self, cx: &mut Context<Self>) {
+    fn save_backend_choice(&mut self, cx: &mut Context<Self>) -> bool {
+        if choice_backend_name(&self.selected_backend).is_none()
+            || (!crate::platform::selection_ready(&self.selected_backend)
+                && !(self.selected_backend == "wayland"
+                    && crate::platform::shortcuts::current_desktop() == Desktop::Gnome
+                    && crate::platform::wayland_session()))
+        {
+            self.backend_choice_error = Some(
+                "Choose an available backend before continuing. XWayland requires an active XWayland display.".to_string(),
+            );
+            cx.notify();
+            return false;
+        }
         let config = {
             let mut shared = self.shared.lock();
             shared.settings.platform_backend = self.selected_backend.clone();
@@ -193,14 +263,26 @@ impl WizardState {
         if self.selected_backend == "wayland" && self.extension_note.is_none() {
             self.extension_note = crate::platform::setup_desktop_integration();
         }
+        let target_name = choice_backend_name(&self.selected_backend);
+        let ready = crate::platform::selection_ready(&self.selected_backend);
+        self.restart_required = target_name != Some(crate::platform::backend().name()) || !ready;
+        self.relogin_required = self.selected_backend == "wayland"
+            && crate::platform::shortcuts::current_desktop() == Desktop::Gnome
+            && self.extension_note.as_ref().is_some_and(|note| note.is_ok())
+            && !ready;
         cx.notify();
+        self.backend_choice_error.is_none()
     }
 
     fn select_backend(&mut self, backend: &str, cx: &mut Context<Self>) {
-        if !["wayland", "xwayland"].contains(&backend) {
+        if !["wayland", "xwayland", "x11"].contains(&backend) {
             return;
         }
         self.selected_backend = backend.to_string();
+        if backend != "wayland" {
+            self.extension_note = None;
+            self.relogin_required = false;
+        }
         self.save_backend_choice(cx);
     }
 
@@ -209,9 +291,10 @@ impl WizardState {
         if event.keystroke.key.as_str() == "enter" && !event.keystroke.modifiers.control {
             match self.step {
                 0 => {
-                    self.save_backend_choice(cx);
-                    self.step = 1;
-                    cx.notify();
+                    if self.save_backend_choice(cx) {
+                        self.step = 1;
+                        cx.notify();
+                    }
                 }
                 4 => self.complete(window, cx),
                 _ => {}
@@ -495,10 +578,11 @@ impl WizardState {
                     .child("A Windows 11-style clipboard manager for Linux. Let's set up a few things to get you started."),
             )
             .children(self.render_backend_choice(cx))
-            .child(self.button("start".to_string(), "Get Started".to_string(), true, false, cx, |this, _, _, cx| {
-                this.save_backend_choice(cx);
-                this.step = 1;
-                cx.notify();
+            .child(self.button("start".to_string(), "Get Started".to_string(), true, backend_choice_available() && self.selected_backend.is_empty(), cx, |this, _, _, cx| {
+                if this.save_backend_choice(cx) {
+                    this.step = 1;
+                    cx.notify();
+                }
             }))
             .into_any_element()
     }
@@ -510,6 +594,12 @@ impl WizardState {
 
         let selected_wayland = self.selected_backend == "wayland";
         let selected_xwayland = self.selected_backend == "xwayland";
+        let selected_x11 = self.selected_backend == "x11";
+        let show_native = native_backend_choice_available();
+        let show_xwayland = crate::platform::xwayland_available();
+        let show_x11 = !crate::platform::wayland_session()
+            && crate::platform::needs_setup()
+            && crate::platform::x11_available();
         let is_dark = self.is_dark();
         let wayland_label = if selected_wayland {
             "✓ Wayland".to_string()
@@ -521,8 +611,11 @@ impl WizardState {
         } else {
             "XWayland".to_string()
         };
+        let x11_label = if selected_x11 { "✓ X11" } else { "X11" };
         let explanation = if selected_wayland {
             "Native Wayland uses GNOME Shell or COSMIC integration. GNOME may need one logout after installing its helper; the choice applies on the next launch."
+        } else if selected_x11 {
+            "X11 is the selected display backend. The choice applies on the next launch."
         } else {
             "XWayland compatibility runs the popup through the X11 backend; the choice applies on the next launch."
         };
@@ -552,22 +645,30 @@ impl WizardState {
                         .items_center()
                         .justify_center()
                         .gap(px(8.))
-                        .child(self.button(
+                        .children(show_native.then(|| self.button(
                             "backend-wayland".to_string(),
                             wayland_label,
                             selected_wayland,
                             false,
                             cx,
                             |this, _, _, cx| this.select_backend("wayland", cx),
-                        ))
-                        .child(self.button(
+                        )))
+                        .children(show_xwayland.then(|| self.button(
                             "backend-xwayland".to_string(),
                             xwayland_label,
                             selected_xwayland,
                             false,
                             cx,
                             |this, _, _, cx| this.select_backend("xwayland", cx),
-                        )),
+                        )))
+                        .children(show_x11.then(|| self.button(
+                            "backend-x11".to_string(),
+                            x11_label.to_string(),
+                            selected_x11,
+                            false,
+                            cx,
+                            |this, _, _, cx| this.select_backend("x11", cx),
+                        ))),
                 )
                 .child(
                     div()
@@ -584,6 +685,13 @@ impl WizardState {
                         "error",
                         icons::ALERT_TRIANGLE,
                         div().child(error).into_any_element(),
+                    )
+                }))
+                .children((!show_native && !show_xwayland && !show_x11).then(|| {
+                    self.status_card(
+                        "error",
+                        icons::ALERT_TRIANGLE,
+                        div().child("No supported display backend is available. Start GNOME/COSMIC Wayland or enable XWayland, then reopen setup.").into_any_element(),
                     )
                 }))
                 .into_any_element(),
@@ -922,8 +1030,21 @@ impl WizardState {
                     } else {
                         theme::light::text_secondary()
                     })
-                    .child("Press the shortcut anytime to open clipboard history."),
+                    .child(if self.relogin_required {
+                        "Log out and back in to activate the GNOME helper, then open the app. It will use the selected backend."
+                    } else if self.restart_required {
+                        "Restarting the app to apply the selected backend."
+                    } else {
+                        "Press the shortcut anytime to open clipboard history."
+                    }),
             )
+            .children(self.backend_choice_error.clone().map(|error| {
+                self.status_card(
+                    "error",
+                    icons::ALERT_TRIANGLE,
+                    div().child(error).into_any_element(),
+                )
+            }))
             .child(
                 div()
                     .flex()
@@ -954,9 +1075,20 @@ impl WizardState {
                             .child("Super + V"),
                     ),
             )
-            .child(self.button("Start Using".to_string(), "Start Using".to_string(), true, false, cx, |this, _, window, cx| {
-                this.complete(window, cx);
-            }))
+            .child(self.button(
+                "Start Using".to_string(),
+                if self.relogin_required {
+                    "Finish Setup".to_string()
+                } else if self.restart_required {
+                    "Restart to Apply".to_string()
+                } else {
+                    "Start Using".to_string()
+                },
+                true,
+                self.backend_choice_error.is_some(),
+                cx,
+                |this, _, window, cx| this.complete(window, cx),
+            ))
             .into_any_element()
     }
 

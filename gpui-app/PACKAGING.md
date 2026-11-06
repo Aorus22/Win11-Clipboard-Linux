@@ -131,22 +131,23 @@ Two further mitigations live in the app:
 
 ## Platform backends (x11, gnome, cosmic)
 
-One binary carries three window backends (`src/platform/`). The saved setup
-choice can select native Wayland or XWayland; `auto` detects the desktop as
-before. Selection runs before gpui initializes:
+One binary carries three window backends (`src/platform/`). Wayland sessions
+require an explicit setup choice; `auto` from older settings files is migrated
+to an unconfigured state. If the chosen backend is unavailable, setup remains
+open and the app does not start the clipboard popup with another backend.
+Selection runs before gpui initializes:
 
 | Backend | Chosen when | How the popup works |
 |---|---|---|
-| `cosmic` | Native Wayland selected on COSMIC, or `auto` detects COSMIC | native Wayland, a transparent full-output `wlr-layer-shell` overlay created per show; the card is drawn at the pointer, dragged and dismissed client-side. No dock entry, no title bar, no XWayland, no `input` group needed |
-| `gnome` | Native Wayland selected on GNOME, or `auto` detects GNOME with its helper | native Wayland window; the extension (embedded in the binary, installed by the wizard or `--install-gnome-extension`) places, shows, hides it, reports the pointer and clicks outside, and keeps the app out of the dock while only the popup is open |
-| `x11` | XWayland selected, or `auto` finds no native desktop backend | X11 client, run through **XWayland** on Wayland sessions (`WAYLAND_DISPLAY` is dropped on purpose: gpui's X11 backend tags the popup `_NET_WM_WINDOW_TYPE_NOTIFICATION`, which docks hide, and cursor-follow works) |
+| `cosmic` | Native Wayland selected on COSMIC | native Wayland, a transparent full-output `wlr-layer-shell` overlay created per show; the card is drawn at the pointer, dragged and dismissed client-side. No dock entry, no title bar, no XWayland, no `input` group needed |
+| `gnome` | Native Wayland selected on GNOME, helper active | native Wayland window; the extension (embedded in the binary, installed by the wizard or `--install-gnome-extension`) places, shows, hides it, reports the pointer and clicks outside, and keeps the app out of the dock while only the popup is open |
+| `x11` | X11 or XWayland explicitly selected | X11 client, run through **XWayland** on Wayland sessions (`WAYLAND_DISPLAY` is dropped on purpose: gpui's X11 backend tags the popup `_NET_WM_WINDOW_TYPE_NOTIFICATION`, which docks hide, and cursor-follow works) |
 
 Notes:
 
 - The GNOME extension is only loaded by GNOME Shell at **login** on Wayland
-(Shell cannot be restarted there). The autostart entry waits five seconds for
-Shell extensions to load. If the helper was just installed, log out and back in
-once before selecting native Wayland.
+(Shell cannot be restarted there). If the helper was just installed, the wizard
+asks for a logout/login; it does not start the popup through XWayland.
 - Supported dock filtering was verified against GNOME Shell 50's stock dash;
 Dash to Dock / Ubuntu Dock use the same `Shell.AppSystem.get_running()` list
 but have not been tested. Where a dock still shows the app, it behaves as a
@@ -158,13 +159,12 @@ Environment variables:
 
 | Env var | Effect |
 |---------|--------|
-| `WIN11_CLIPBOARD_BACKEND=x11\|gnome\|cosmic` | override the saved backend selection (debug/CI) |
-| `WIN11_CLIPBOARD_ALLOW_WAYLAND=1` | with the `x11` backend: keep native Wayland instead of pinning XWayland |
+| `WIN11_CLIPBOARD_BACKEND=x11\|gnome\|cosmic` | explicitly override the saved backend selection (debug/CI); an unavailable override keeps the app in setup |
 | `WIN11_CLIPBOARD_BLUR=1` | `cosmic`: ask the compositor (`ext-background-effect-v1`) to blur behind the card; opt-in, not yet verified on a real COSMIC |
 
-If no `DISPLAY` (XWayland) is available the `x11` backend stays on Wayland
-automatically. Settings and the wizard are ordinary decorated windows and always
-show up in the dock — only the clipboard popup is hidden.
+If no `DISPLAY` (XWayland) is available, XWayland cannot be selected. Settings
+and the wizard are ordinary decorated windows and always show up in the dock —
+only the clipboard popup is hidden.
 
 ## First run checklist
 

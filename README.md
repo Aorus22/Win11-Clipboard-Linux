@@ -83,15 +83,16 @@ Most Linux clipboard managers are purely functional but lack visual appeal. This
 
 ## Desktop support
 
-One binary picks its window backend at startup. The setup wizard offers a
-native Wayland or XWayland choice on Wayland sessions; `WIN11_CLIPBOARD_BACKEND`
-can override it for debugging.
+One binary carries the X11, GNOME Wayland, and COSMIC Wayland backends. On a
+Wayland session, the setup wizard requires an explicit choice. If the selected
+backend is unavailable, the app stays in setup instead of switching backends.
+`WIN11_CLIPBOARD_BACKEND` is an explicit debug override.
 
 | Desktop | Backend | Popup |
 | --- | --- | --- |
-| COSMIC (Wayland) | `cosmic` | native `wlr-layer-shell` overlay, at the cursor, no dock entry |
-| GNOME (Wayland) + helper extension | `gnome` | native Wayland window placed by the extension (installed by the setup wizard; log out/in once) |
-| GNOME without the extension, KDE, Sway, … | `x11` | XWayland, hidden from docks via the notification window type |
+| COSMIC (Wayland), when selected | `cosmic` | native `wlr-layer-shell` overlay, at the cursor, no dock entry |
+| GNOME (Wayland), when selected and helper is active | `gnome` | native Wayland window placed by the extension (installed by the setup wizard; log out/in once if new) |
+| Other Wayland desktops, when XWayland is selected | `x11` | XWayland, hidden from docks via the notification window type |
 | Any X11 session | `x11` | native X11, follows the cursor |
 
 The COSMIC / GNOME / X11 split applies to both the GPUI build and the [iced / libcosmic build](iced-app/README.md).

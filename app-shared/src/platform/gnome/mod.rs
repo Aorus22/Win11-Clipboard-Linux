@@ -4,11 +4,9 @@
 //! xdg-shell has no "notification" window type to keep the popup out of the
 //! dock. The extension in `extension/` is the compositor-side helper: this
 //! backend asks it over D-Bus ([`client`]) to place / show / hide the popup,
-//! to report the pointer and to say when the user clicked outside. Selected
-//! only while the extension is actually running (see `platform::select`); the
-//! `x11` backend remains the fallback.
+//! to report the pointer and to say when the user clicked outside. It is only
+//! selected when explicitly chosen and the helper is already active.
 
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use super::{Capabilities, Hooks, PlatformBackend, PopupDrag};
@@ -20,39 +18,37 @@ pub mod install;
 pub struct GnomeBackend;
 
 /// GNOME on a Wayland session with the helper extension running.
-///
-/// An autostarted daemon can outrun the shell: the extension is installed and
-/// enabled but has not taken its D-Bus name yet. Falling back to XWayland then
-/// would pin the popup to the unscaled X11 path for the whole session, so the
-/// background start waits a while for the extension. Other launches (shortcut
-/// clients, manual starts) never wait.
-pub(super) fn auto_selected() -> bool {
-    static RESULT: OnceLock<bool> = OnceLock::new();
-    *RESULT.get_or_init(|| {
-        if super::shortcuts::current_desktop() != super::shortcuts::Desktop::Gnome
-            || !super::wayland_session()
-        {
-            return false;
-        }
-        if client::extension_ready() {
-            return true;
-        }
-        let autostart = std::env::args().any(|a| a == "--background");
-        if !(autostart && install::is_installed() && install::is_enabled()) {
-            return false;
-        }
-        eprintln!("[app] waiting for the GNOME extension to come up");
-        for _ in 0..EXTENSION_WAIT_TICKS {
-            std::thread::sleep(Duration::from_millis(250));
-            if client::extension_ready() {
-                return true;
-            }
-        }
-        false
-    })
+pub(super) fn ready() -> bool {
+    super::shortcuts::current_desktop() == super::shortcuts::Desktop::Gnome
+        && super::wayland_session()
+        && client::extension_ready()
 }
 
-const EXTENSION_WAIT_TICKS: u32 = 80; // 20 s
+/// An autostarted daemon can begin before Shell publishes the helper's D-Bus
+/// name. Wait for the explicitly selected GNOME backend to become ready; if it
+/// does not, startup stays in setup instead of choosing XWayland.
+pub(super) fn startup_ready() -> bool {
+    if super::shortcuts::current_desktop() != super::shortcuts::Desktop::Gnome
+        || !super::wayland_session()
+    {
+        return false;
+    }
+    if ready() {
+        return true;
+    }
+    let autostart = std::env::args().any(|arg| arg == "--background");
+    if !(autostart && install::is_installed() && install::is_enabled()) {
+        return false;
+    }
+    eprintln!("[app] waiting for the selected GNOME backend to become ready");
+    for _ in 0..80 {
+        std::thread::sleep(Duration::from_millis(250));
+        if ready() {
+            return true;
+        }
+    }
+    false
+}
 
 impl PlatformBackend for GnomeBackend {
     fn name(&self) -> &'static str {

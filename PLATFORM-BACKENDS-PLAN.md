@@ -11,7 +11,7 @@ sisanya tetap shared:
 
 | Backend | Peran |
 |---------|-------|
-| `x11` | **Legacy, perilaku sekarang dipertahankan.** Paksa XWayland (`pin_display_backend_to_x11`) di sesi Wayland, posisi kursor + drag lewat x11rb. Jadi fallback untuk semua desktop yang belum punya backend sendiri (KDE, Sway, dll.) dan sesi X11 asli. |
+| `x11` | Backend X11/XWayland yang dipilih pengguna. Paksa XWayland (`pin_display_backend_to_x11`) di sesi Wayland, posisi kursor + drag lewat x11rb. Untuk KDE, Sway, dan sesi X11, pilihan ini tersedia bila display-nya aktif. |
 | `cosmic` | Popup native Wayland lewat `wlr-layer-shell`. Tanpa XWayland, tanpa trik override-redirect. |
 | `gnome` | Popup native Wayland sebagai jendela biasa, ditempatkan oleh **ekstensi GNOME Shell** ("penjaga posisi"). |
 
@@ -53,12 +53,13 @@ hanya mengurus jendela.
 Satu binary, `platform::select()` dipanggil paling awal di `main()` (sebelum gpui, menggantikan
 `pin_display_backend_to_x11`). Urutan:
 
-1. `WIN11_CLIPBOARD_BACKEND=x11|cosmic|gnome` (override untuk debug/CI).
-2. `XDG_CURRENT_DESKTOP` berisi `cosmic` dan sesi Wayland → `cosmic`.
-3. `XDG_CURRENT_DESKTOP` berisi `gnome`, sesi Wayland, **dan ekstensi aktif** → `gnome`.
-4. Selain itu → `x11` (butuh `DISPLAY`; kalau tidak ada, jalan di Wayland biasa seperti sekarang).
+1. `WIN11_CLIPBOARD_BACKEND=x11|cosmic|gnome` (pilihan eksplisit untuk debug/CI).
+2. Backend yang tersimpan (`wayland`, `xwayland`, atau `x11`).
+3. Pada sesi Wayland tanpa pilihan yang valid/siap, aplikasi membuka wizard tanpa popup.
+4. Sesi X11 memakai `x11` karena itu satu-satunya backend yang tersedia.
 
-GNOME tanpa ekstensi otomatis jatuh ke `x11`, dan wizard menawarkan pasang ekstensi.
+GNOME tanpa ekstensi tidak berpindah ke XWayland; wizard memasang helper dan meminta
+logout/login bila Shell belum memuatnya.
 
 ### 3.3 Bentuk antarmuka
 Trait object statis (`&'static dyn PlatformBackend`), bukan `cfg`, karena satu binary harus bisa memilih.
@@ -148,7 +149,7 @@ dan GNOME tetap di `x11`.
 - `install.rs`: salin ekstensi ke `~/.local/share/gnome-shell/extensions/<uuid>/`, `gnome-extensions enable`,
   dan tampilkan status di wizard.
 - **Catatan penting:** di Wayland, GNOME Shell tidak bisa di-restart, jadi ekstensi yang **baru dipasang** baru
-  termuat setelah logout/login. Wizard harus menjelaskan ini, dan `select()` tetap jatuh ke `x11` sampai ekstensi aktif.
+  termuat setelah logout/login. Wizard harus menjelaskan ini dan menahan popup sampai backend GNOME siap.
 - Kompatibilitas: tentukan rentang `shell-version` (ekstensi ESM, GNOME 45+) dan uji di versi terendah dan tertinggi.
 
 ### Fase 3 — Naik dari `gpui =0.2.2` ke `gpui-pre` 0.3.8 (keputusan: dikerjakan)
@@ -175,7 +176,7 @@ Ide: satu surface layer-shell transparan **sebesar satu output penuh** di `Layer
 - AppImage membawa ekstensi GNOME (di `usr/share/...`); `install.rs` menyalinnya saat pertama jalan.
 - Perbarui `BUILD-AND-SETUP.md`, `PACKAGING.md`, dan README (tabel dukungan per desktop).
 - Tambahkan env `WIN11_CLIPBOARD_BACKEND` ke dokumentasi debug.
-- Matriks uji manual di `.planning/phases/.../HUMAN-CHECKLIST.md`: GNOME Wayland (dengan dan tanpa ekstensi), COSMIC, GNOME/X11, KDE (fallback `x11`).
+- Matriks uji manual di `.planning/phases/.../HUMAN-CHECKLIST.md`: GNOME Wayland (dengan dan tanpa ekstensi), COSMIC, GNOME/X11, dan KDE dengan XWayland yang dipilih eksplisit.
 
 ## 6. Urutan dan ketergantungan
 

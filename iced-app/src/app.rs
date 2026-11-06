@@ -146,17 +146,21 @@ impl cosmic::Application for App {
         let settings = settings::load();
         let backend = BackendService::new(&settings);
         let hooks = Hooks::new(flags.commands.clone());
-        let tray = TrayControl::start(
-            flags.commands.clone(),
-            TrayState { dynamic_icon: settings.enable_dynamic_tray_icon, dark: cosmic::theme::active().cosmic().is_dark },
-        );
+        let tray = if platform::needs_setup() {
+            None
+        } else {
+            Some(TrayControl::start(
+                flags.commands.clone(),
+                TrayState { dynamic_icon: settings.enable_dynamic_tray_icon, dark: cosmic::theme::active().cosmic().is_dark },
+            ))
+        };
         let mut app = App {
             core,
             settings,
             last_version: backend.version(),
             backend,
             hooks,
-            tray: Some(tray),
+            tray,
             popup: Popup::new(),
             surface: Surface::None,
             visible: false,
@@ -1168,6 +1172,18 @@ impl App {
         let outcome = wizard::update(state, msg);
         if let Some(text) = outcome.copy {
             let _ = self.backend.copy_text(&text);
+        }
+        if outcome.relogin {
+            std::process::exit(0);
+        }
+        if outcome.restart_backend {
+            match crate::spawn_backend_restart() {
+                Ok(()) => std::process::exit(0),
+                Err(error) => {
+                    state.backend_choice_error = Some(error);
+                    return T::none();
+                }
+            }
         }
         if outcome.drag {
             return window::drag(id);

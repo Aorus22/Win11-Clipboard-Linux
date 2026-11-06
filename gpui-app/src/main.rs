@@ -716,7 +716,9 @@ fn main() {
     }
 
     let want_settings = has_arg(&args, "--settings") || settings_open;
-    let want_setup = has_arg(&args, "--setup") || app_state::is_first_run();
+    let want_setup = has_arg(&args, "--setup")
+        || app_state::is_first_run()
+        || platform::needs_setup();
     let background = has_arg(&args, "--background");
     let no_tray = has_arg(&args, "--no-tray");
     // Verification aid: open a specific popup tab to exercise its render path.
@@ -764,7 +766,11 @@ fn main() {
     // GTK is up (or not) at this point; the tray backend needs it and nothing else
     // runs a gtk main loop, so the poll loop below pumps its idle callbacks.
     // On native GNOME the helper extension already puts an icon in the top bar.
-    let mut tray = if gtk_ok && !no_tray && platform::backend().name() != "gnome" {
+    let mut tray = if gtk_ok
+        && !no_tray
+        && !platform::needs_setup()
+        && platform::backend().name() != "gnome"
+    {
         let (dynamic_tray, dark) = {
             let guard = shared.lock();
             (guard.settings.enable_dynamic_tray_icon, guard.theme.is_dark)

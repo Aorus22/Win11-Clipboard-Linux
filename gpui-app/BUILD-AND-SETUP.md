@@ -8,11 +8,9 @@ reference details (coexistence map, AppDir layout, Wayland notes), see
 Tested on Fedora 44 · Rust 1.98 · gpui-pre 0.3.8 + the Wayland patches from
 `gpui-wayland-patches` (layer-shell, blur), pinned via `gpui-app/Cargo.lock`.
 
-> **Build prerequisite:** `gpui-app/Cargo.toml` currently patches `gpui-pre` /
-> `gpui-pre-linux` with a **local path** to a `gpui-wayland-patches` checkout
-> (`~/Project/gpui-wayland-patches`). Before CI / the Docker AppImage build can
-> work, push that repo and switch the `[patch.crates-io]` lines to
-> `git = "https://github.com/Aorus22/gpui-wayland-patches", rev = "<rev>"`.
+> **Build prerequisite:** `gpui-app/Cargo.toml` pins `gpui-pre` and
+> `gpui-pre-linux` to the public `Aorus22/gpui-wayland-patches` repository at a
+> fixed revision, so local and CI builds use the same Wayland patches.
 
 ---
 
@@ -138,10 +136,11 @@ Launch the app:
 
 The 5-step setup wizard opens automatically:
 
-1. **Display backend (Wayland sessions on GNOME/COSMIC)** — choose native
-   Wayland or XWayland compatibility. The choice is saved for later launches.
-   Native Wayland on GNOME installs the helper; log out and back in once if it
-   was not already active.
+1. **Display backend (Wayland sessions)** — explicitly choose native Wayland
+   where GNOME/COSMIC integration is available, or XWayland compatibility.
+   The app does not change your choice if that backend is unavailable. GNOME
+   installs its helper; if it needs a logout/login, the app exits. Reopen it
+   after you sign back in to use the selected backend.
 2. **Permissions** — paste injection needs write access to `/dev/uinput`.
    Use the wizard's *Fix Permissions* (`pkexec setfacl`), or make it durable
    with the udev rule (`TAG+="uaccess"`) or `input` group membership.
@@ -157,11 +156,12 @@ The 5-step setup wizard opens automatically:
    `com.system76.CosmicTheme.Mode` config.
    **COSMIC popup:** native Wayland `wlr-layer-shell` overlay (no XWayland, no
    dock entry, no `input` group needed for outside clicks).
-   **GNOME popup:** the wizard also installs the helper extension
+   **GNOME popup:** the wizard installs the helper extension
    (`clipboard-history-gpui@win11-clipboard.dev`, embedded in the binary; same as
    `win11-clipboard-history-gpui --install-gnome-extension`) and adds it to
    `enabled-extensions`. GNOME Shell loads new extensions at login on Wayland, so
-   **log out and back in once**; until then the legacy XWayland backend is used.
+   **log out and back in once** if the wizard requests it. It will not switch to
+   XWayland while waiting.
    Verify:
 
    ```bash
@@ -170,7 +170,8 @@ The 5-step setup wizard opens automatically:
 4. **Autostart** — optional; writes
    `~/.config/autostart/win11-clipboard-history-gpui.desktop` with
    `--background` (tray-only at login).
-5. Done → the popup closes, the app stays resident in the tray.
+5. Finish setup → the app restarts to apply the selected backend. If GNOME asks
+   for a logout/login, reopen the app after signing in; otherwise the popup opens.
 
 ### Tray icon on GNOME
 
@@ -205,7 +206,7 @@ Super+V again (or click elsewhere) hides it.
 | Link error `-lxdo` or `-lxkbcommon-x11` | install `libxdo-devel` / `libxkbcommon-x11-devel` (section 1) |
 | `cargo check` passes, release *link* fails | same as above — only the link step pulls those libs |
 | Tray icon missing | AppIndicator extension not enabled (section 4); also check `gdbus call --session --dest org.kde.StatusNotifierWatcher --object-path /StatusNotifierWatcher --method org.freedesktop.DBus.Properties.Get org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems` |
-| App appears in the dock | GNOME: the helper extension is not running yet (log out/in after installing it) and XWayland is unavailable or you forced Wayland (`WIN11_CLIPBOARD_ALLOW_WAYLAND=1`); check the startup line `[gpui-app] platform backend: …` |
+| App appears in the dock | Check the startup line `[app] platform backend: …` and the GNOME helper status; the selected backend is never changed automatically |
 | Popup won't close on outside click / drag misbehaves | inspect `~/.config/win11-clipboard-history-gpui/drag-debug.log` (disable with `WIN11_CLIPBOARD_DRAG_LOG=0`) |
 | Settings window: transparency disabled | expected on NVIDIA + AppImage (WebKit DMABUF workaround); the Settings window says so |
 | Reset everything (fresh wizard) | `rm -rf ~/.config/win11-clipboard-history-gpui/` |
@@ -294,7 +295,6 @@ compositor shadow or frame exists around it — it only shares the 1 px outline.
 |---|---|
 | `WIN11_CLIPBOARD_DRAG_LOG=0` | disable the drag trace log |
 | `WIN11_CLIPBOARD_BACKEND=x11\|gnome\|cosmic` | force a window backend (see PACKAGING.md) |
-| `WIN11_CLIPBOARD_ALLOW_WAYLAND=1` | `x11` backend only: keep native Wayland (popup shows in dock while open) |
 | `WIN11_CLIPBOARD_BLUR=1` | `cosmic` backend: compositor blur behind the popup card (opt-in) |
 
 ### Useful CLI flags

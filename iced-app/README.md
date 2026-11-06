@@ -22,14 +22,16 @@ tray is a pure D-Bus StatusNotifierItem).
 
 ## Window backends
 
-Chosen at startup like the GPUI build (`WIN11_CLIPBOARD_BACKEND=x11|gnome|cosmic`, see
-[`gpui-app/PACKAGING.md`](../gpui-app/PACKAGING.md#platform-backends-x11-gnome-cosmic)):
+Chosen explicitly in the setup wizard on Wayland sessions. If the selected
+backend is unavailable, the app stays in setup instead of switching backends.
+The debug override (`WIN11_CLIPBOARD_BACKEND=x11|gnome|cosmic`) and details are in
+[`gpui-app/PACKAGING.md`](../gpui-app/PACKAGING.md#platform-backends-x11-gnome-cosmic):
 
 | Desktop | Popup |
 |---|---|
-| COSMIC (Wayland) | transparent full-output `wlr-layer-shell` overlay, created per show; card at the pointer (bottom-center if the pointer has not moved), drag and click-outside handled in-surface; blur behind the card follows COSMIC's frosted-glass setting (`WIN11_CLIPBOARD_BLUR=1|0` forces it) |
-| GNOME (Wayland) + extension | native window placed/shown/hidden by the shared GNOME Shell extension (`--install-gnome-extension`, log out/in once) |
-| X11 / everything else | X11 window moved/mapped through `app-shared`'s x11 backend |
+| COSMIC (Wayland), when selected | transparent full-output `wlr-layer-shell` overlay, created per show; card at the pointer (bottom-center if the pointer has not moved), drag and click-outside handled in-surface; blur behind the card follows COSMIC's frosted-glass setting (`WIN11_CLIPBOARD_BLUR=1|0` forces it) |
+| GNOME (Wayland), when selected and helper active | native window placed/shown/hidden by the shared GNOME Shell extension (`--install-gnome-extension`; log out/in once if new) |
+| X11 / XWayland, when selected | X11 window moved/mapped through `app-shared`'s x11 backend |
 
 ## What differs from the GPUI build
 

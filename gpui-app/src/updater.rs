@@ -219,6 +219,22 @@ pub fn spawn_restart() -> Result<(), String> {
         .map_err(|e| format!("Couldn't restart: {e}"))
 }
 
+/// Relaunch after a setup backend choice has been saved. The normal start opens
+/// the popup after this process releases its single-instance socket.
+pub fn spawn_backend_restart() -> Result<(), String> {
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg("sleep 1; exec \"$0\"")
+        .arg(app_shared::launcher::launcher_path())
+        .env("APPIMAGE_EXTRACT_AND_RUN", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Couldn't restart with the selected backend: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

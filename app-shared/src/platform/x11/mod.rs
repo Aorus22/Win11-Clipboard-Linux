@@ -31,19 +31,9 @@ pub struct X11Backend;
 /// shared backend's `session::is_wayland()` (cached on first use) matches the
 /// backend actually in use and takes the X11 focus/positioning paths.
 ///
-/// Opt out with `WIN11_CLIPBOARD_ALLOW_WAYLAND=1`.
 pub(in crate::platform) fn pin_display_backend_to_x11() {
-    if std::env::var_os("WIN11_CLIPBOARD_ALLOW_WAYLAND").is_some() {
-        return;
-    }
     if !std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty()) {
         return; // Already X11, or not a Wayland session at all.
-    }
-    // Without XWayland there is nothing to fall back to — stay on Wayland
-    // rather than starting headless.
-    if !std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty()) {
-        eprintln!("[app] no DISPLAY (XWayland) available; keeping the Wayland backend");
-        return;
     }
     std::env::remove_var("WAYLAND_DISPLAY");
     std::env::remove_var("WAYLAND_SOCKET");

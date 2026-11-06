@@ -190,50 +190,117 @@ pub fn init_with_preference(preference: Option<&str>) {
 static X11_BACKEND: x11::X11Backend = x11::X11Backend;
 static COSMIC_BACKEND: cosmic::CosmicBackend = cosmic::CosmicBackend;
 static GNOME_BACKEND: gnome::GnomeBackend = gnome::GnomeBackend;
+static UNCONFIGURED_BACKEND: UnconfiguredBackend = UnconfiguredBackend;
 
-/// Backend choice, in order:
-/// 1. `WIN11_CLIPBOARD_BACKEND=x11|cosmic|gnome` (debug/CI override);
-/// 2. the saved `wayland` / `xwayland` setup choice;
-/// 3. automatic COSMIC or GNOME detection;
-/// 4. `x11` (X11 sessions, and Wayland desktops without a native backend).
+/// Resolve one explicit backend. On a Wayland session, missing or unavailable
+/// choices enter setup; they never silently change to another backend.
 fn select(preference: Option<&str>) -> &'static dyn PlatformBackend {
     if let Ok(name) = std::env::var("WIN11_CLIPBOARD_BACKEND") {
         match name.trim().to_ascii_lowercase().as_str() {
-            "x11" => return &X11_BACKEND,
-            "cosmic" => return &COSMIC_BACKEND,
-            "gnome" => return &GNOME_BACKEND,
-            other => eprintln!(
-                "[app] unknown WIN11_CLIPBOARD_BACKEND={other:?}; choosing automatically"
-            ),
+            "x11" if x11_available() => return &X11_BACKEND,
+            "cosmic" if cosmic::auto_selected() => return &COSMIC_BACKEND,
+            "gnome" if gnome::startup_ready() => return &GNOME_BACKEND,
+            other => {
+                eprintln!("[app] requested WIN11_CLIPBOARD_BACKEND={other:?} is unavailable; open setup to choose a backend");
+                return &UNCONFIGURED_BACKEND;
+            }
         }
     }
     let preference = preference.map(|value| value.trim().to_ascii_lowercase());
     match preference.as_deref() {
-        Some("xwayland") => return &X11_BACKEND,
+        Some("x11") if x11_available() => return &X11_BACKEND,
+        Some("xwayland") if xwayland_available() || !wayland_session() && x11_available() => {
+            return &X11_BACKEND;
+        }
         Some("wayland") => {
             if cosmic::auto_selected() {
                 return &COSMIC_BACKEND;
             }
-            if gnome::auto_selected() {
+            if gnome::startup_ready() {
                 return &GNOME_BACKEND;
             }
-            eprintln!(
-                "[app] Wayland was selected, but native desktop integration is not ready; \
-                 using XWayland for this launch"
-            );
+            eprintln!("[app] Wayland was selected, but its native desktop integration is not ready; no backend fallback will be used");
+            return &UNCONFIGURED_BACKEND;
         }
-        Some("auto") | None => {}
-        Some(other) => eprintln!(
-            "[app] unknown saved platform backend {other:?}; choosing automatically"
-        ),
+        Some("unconfigured") | Some("auto") | None if wayland_session() => {
+            eprintln!("[app] choose Wayland or XWayland in setup before opening clipboard history");
+            return &UNCONFIGURED_BACKEND;
+        }
+        Some("unconfigured") | Some("auto") | None if x11_available() => return &X11_BACKEND,
+        Some(other) => {
+            eprintln!("[app] saved platform backend {other:?} is unavailable; open setup to choose a backend");
+            return &UNCONFIGURED_BACKEND;
+        }
+        None => {
+            eprintln!("[app] X11 display is unavailable; open setup to choose an available backend");
+            return &UNCONFIGURED_BACKEND;
+        }
     }
-    if cosmic::auto_selected() {
-        return &COSMIC_BACKEND;
+}
+
+pub fn x11_available() -> bool {
+    std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty())
+}
+
+pub fn xwayland_available() -> bool {
+    wayland_session() && x11_available()
+}
+
+fn gnome_ready() -> bool {
+    gnome::ready()
+}
+
+/// Whether startup could not honor the saved/explicit backend. The app opens
+/// setup instead of showing a popup using a different backend.
+pub fn needs_setup() -> bool {
+    BACKEND
+        .get()
+        .is_some_and(|backend| backend.name() == "unconfigured")
+}
+
+pub fn is_initialized() -> bool {
+    BACKEND.get().is_some()
+}
+
+/// Whether a wizard choice can be applied immediately. GNOME Shell only loads
+/// a newly enabled Wayland extension after the next login.
+pub fn selection_ready(preference: &str) -> bool {
+    match preference {
+        "x11" => x11_available(),
+        "xwayland" => xwayland_available() || !wayland_session() && x11_available(),
+        "wayland" => match shortcuts::current_desktop() {
+            shortcuts::Desktop::Cosmic => cosmic::auto_selected(),
+            shortcuts::Desktop::Gnome => gnome_ready(),
+            shortcuts::Desktop::Other => false,
+        },
+        _ => false,
     }
-    if gnome::auto_selected() {
-        return &GNOME_BACKEND;
+}
+
+struct UnconfiguredBackend;
+
+impl PlatformBackend for UnconfiguredBackend {
+    fn name(&self) -> &'static str { "unconfigured" }
+    fn native_wayland_windows(&self) -> bool { wayland_session() }
+    fn needs_holder_window(&self) -> bool { false }
+    fn cursor_position(&self) -> Option<(i32, i32)> { None }
+    fn place_popup(&self, _size: (f32, f32), _x: i32, _y: i32) -> Result<(), String> {
+        Err("Choose a popup backend in setup first".to_string())
     }
-    &X11_BACKEND
+    fn set_popup_visible(&self, _size: (f32, f32), _visible: bool) -> Result<(), String> {
+        Err("Choose a popup backend in setup first".to_string())
+    }
+    fn popup_window_id(&self) -> Option<u32> { None }
+    fn begin_drag(&self, _size: (f32, f32)) -> Result<Box<dyn PopupDrag>, String> {
+        Err("Choose a popup backend in setup first".to_string())
+    }
+    fn unmanage_holder(&self) -> Result<(), String> { Ok(()) }
+    fn set_frame_extents(&self, _title: &str, _margin: u32) -> Result<(), String> { Ok(()) }
+    fn spawn_outside_click_watcher(&self, _hooks: Hooks) {}
+    fn register_global_hotkeys(&self) -> Option<Hotkeys> { None }
+    fn capabilities(&self) -> Capabilities {
+        Capabilities { cursor_follow: false, client_drag: false, outside_click: false, global_hotkeys: false }
+    }
 }
 
 /// Wayland session, read from the environment directly: this runs before

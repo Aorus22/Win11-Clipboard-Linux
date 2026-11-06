@@ -6,7 +6,7 @@
 //!
 //! On Wayland, GNOME Shell cannot be restarted and only scans extensions at
 //! login, so a freshly installed extension is active after the next log-in.
-//! Until then `platform::select()` keeps the `x11` backend.
+//! Until then startup keeps the app in setup instead of switching to XWayland.
 
 use std::path::PathBuf;
 use std::process::Command;

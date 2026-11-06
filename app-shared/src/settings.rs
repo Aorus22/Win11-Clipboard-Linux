@@ -29,7 +29,7 @@ fn default_category() -> String {
 pub struct AppSettings {
     #[serde(default = "default_theme_mode")]
     pub theme_mode: String,
-    /// `auto`, native Wayland for the current desktop, or XWayland compatibility.
+    /// Explicit popup backend: `unconfigured`, `x11`, `wayland`, or `xwayland`.
     #[serde(default = "default_platform_backend")]
     pub platform_backend: String,
     #[serde(default = "default_opacity")]
@@ -61,7 +61,7 @@ fn default_theme_mode() -> String {
     "system".to_string()
 }
 fn default_platform_backend() -> String {
-    "auto".to_string()
+    "unconfigured".to_string()
 }
 fn default_opacity() -> f32 {
     0.70
@@ -100,7 +100,12 @@ impl Default for AppSettings {
 
 impl AppSettings {
     pub fn validate(&mut self) {
-        if !["auto", "wayland", "xwayland"].contains(&self.platform_backend.as_str()) {
+        // Older settings files used `auto`. Treat them as needing a choice so
+        // a GNOME Wayland session can never silently switch to XWayland.
+        if self.platform_backend == "auto"
+            || !["unconfigured", "x11", "wayland", "xwayland"]
+                .contains(&self.platform_backend.as_str())
+        {
             self.platform_backend = default_platform_backend();
         }
         self.dark_background_opacity = self.dark_background_opacity.clamp(0.0, 1.0);
